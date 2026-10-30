@@ -125,18 +125,9 @@ func (o *Option) StartManager(ctx context.Context, clusterName string, onTrustBu
 	if err != nil {
 		return nil, nil, err
 	}
-	// This connection carries CreateCertificate, which authenticates with the
-	// projected token, so it presents no client certificate. It works before
-	// the first SVID exists, and also after the SVID expired or was signed by
-	// a hub CA the hub no longer trusts, which the hub would refuse in the
-	// handshake.
-	certTLSConfig, err := agent.HubTLSConfig(o.TrustDomain, &agent.FileTrustBundle{Path: o.TrustBundleFile}, nil)
+	conn, err := agent.DialCertificateService(o.GRPCServer, o.TrustDomain, &agent.FileTrustBundle{Path: o.TrustBundleFile})
 	if err != nil {
 		return nil, nil, err
-	}
-	conn, err := grpcgo.NewClient(o.GRPCServer, grpcgo.WithTransportCredentials(credentials.NewTLS(certTLSConfig)))
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to connect to the hub gRPC server %s: %w", o.GRPCServer, err)
 	}
 	go func() {
 		<-ctx.Done()

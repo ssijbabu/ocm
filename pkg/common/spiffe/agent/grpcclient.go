@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 
 	certv1 "open-cluster-management.io/sdk-go/pkg/server/grpc/certificate/v1"
 )
@@ -17,6 +18,24 @@ type GRPCCertificateClient struct {
 }
 
 var _ CertificateClient = &GRPCCertificateClient{}
+
+// DialCertificateService connects to the hub CertificateService without a
+// client certificate. CreateCertificate authenticates with the projected
+// token, and presenting the current SVID would make the hub refuse the
+// handshake once that SVID expired, or was signed by a hub CA the hub no
+// longer trusts, so the agent could never renew. Every agent, addon agents
+// included, should dial the certificate service this way.
+func DialCertificateService(server, trustDomain string, bundle TrustBundleSource) (*grpc.ClientConn, error) {
+	tlsConfig, err := HubTLSConfig(trustDomain, bundle, nil)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := grpc.NewClient(server, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to the hub gRPC server %s: %w", server, err)
+	}
+	return conn, nil
+}
 
 // NewGRPCCertificateClient returns a client using conn.
 func NewGRPCCertificateClient(conn grpc.ClientConnInterface) *GRPCCertificateClient {
