@@ -7,6 +7,7 @@ import (
 	"github.com/openshift/library-go/pkg/controller/controllercmd"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeinformers "k8s.io/client-go/informers"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
 	addonclient "open-cluster-management.io/api/client/addon/clientset/versioned"
@@ -20,6 +21,7 @@ import (
 
 type Clients struct {
 	KubeClient       kubernetes.Interface
+	DynamicClient    dynamic.Interface
 	ClusterClient    clusterv1client.Interface
 	WorkClient       workclientset.Interface
 	AddOnClient      addonclient.Interface
@@ -46,8 +48,13 @@ func NewClients(controllerContext *controllercmd.ControllerContext) (*Clients, e
 	if err != nil {
 		return nil, err
 	}
+	dynamicClient, err := dynamic.NewForConfig(controllerContext.KubeConfig)
+	if err != nil {
+		return nil, err
+	}
 	return &Clients{
 		KubeClient:    kubeClient,
+		DynamicClient: dynamicClient,
 		ClusterClient: clusterClient,
 		AddOnClient:   addonClient,
 		WorkClient:    workClient,

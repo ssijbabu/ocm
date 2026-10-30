@@ -13,7 +13,12 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
+	discoveryfake "k8s.io/client-go/discovery/fake"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 
 	certv1 "open-cluster-management.io/sdk-go/pkg/server/grpc/certificate/v1"
@@ -110,7 +115,15 @@ func TestDriverObtainsSVIDAndStoresTrustBundle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	spokeClient := kubefake.NewSimpleClientset()
-	if err := d.Start(ctx, spokeClient); err != nil {
+	disc := spokeClient.Discovery().(*discoveryfake.FakeDiscovery)
+	disc.Resources = []*metav1.APIResourceList{{
+		GroupVersion: "certificates.k8s.io/v1",
+		APIResources: []metav1.APIResource{{Name: "clustertrustbundles", Kind: "ClusterTrustBundle"}},
+	}}
+	ctbGVR := schema.GroupVersionResource{Group: "certificates.k8s.io", Version: "v1", Resource: "clustertrustbundles"}
+	spokeDynamic := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{ctbGVR: "ClusterTrustBundleList"})
+	if err := d.Start(ctx, spokeClient, spokeDynamic); err != nil {
 		t.Fatal(err)
 	}
 	if err := wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
@@ -119,12 +132,12 @@ func TestDriverObtainsSVIDAndStoresTrustBundle(t *testing.T) {
 		t.Fatalf("driver never obtained its SVID: %v", err)
 	}
 
-	ctb, err := spokeClient.CertificatesV1beta1().ClusterTrustBundles().Get(ctx, trustbundle.Name, metav1.GetOptions{})
+	ctb, err := spokeDynamic.Resource(ctbGVR).Get(ctx, trustbundle.Name, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("hub trust bundle not stored in the spoke ClusterTrustBundle: %v", err)
 	}
-	if ctb.Spec.SignerName != trustbundle.SignerName {
-		t.Errorf("unexpected signer %q", ctb.Spec.SignerName)
+	if signer, _, _ := unstructured.NestedString(ctb.Object, "spec", "signerName"); signer != trustbundle.SignerName {
+		t.Errorf("unexpected signer %q", signer)
 	}
 
 	cert, err := d.ClientCertificate(nil)

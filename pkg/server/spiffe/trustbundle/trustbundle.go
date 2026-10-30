@@ -1,6 +1,10 @@
 // Package trustbundle publishes the hub trust bundle as a signer-linked
-// ClusterTrustBundle on the hub. Spokes copy it at join and later receive
-// updates with their agent SVIDs.
+// ClusterTrustBundle. The hub publishes it for clusters that join; spokes keep
+// their copy current from the bundle returned with each agent SVID.
+//
+// ClusterTrustBundle is served as certificates.k8s.io/v1 from Kubernetes 1.37
+// and as v1beta1 before, where it may have to be enabled. The publisher uses
+// whichever version the API server serves; the fields are the same.
 package trustbundle
 
 import (
@@ -9,31 +13,68 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"sync"
 
-	certificatesv1beta1 "k8s.io/api/certificates/v1beta1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	certificatesv1beta1client "k8s.io/client-go/kubernetes/typed/certificates/v1beta1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/dynamic"
 )
 
 const (
 	// SignerName links the hub trust bundle to the OCM SPIFFE signer. The
 	// kube-apiserver accepts writes to the bundle only from callers allowed to
-	// attest for this signer, which on the hub is only grpc-server-sa.
+	// attest for this signer.
 	SignerName = "open-cluster-management.io/spiffe-hub"
 	// Name is the ClusterTrustBundle name. Signer-linked bundles must be named
 	// after their signer, with "/" replaced by ":", plus a suffix.
 	Name = "open-cluster-management.io:spiffe-hub:ca"
+
+	group    = "certificates.k8s.io"
+	resource = "clustertrustbundles"
 )
 
-// Publisher writes the hub trust bundle to the hub ClusterTrustBundle.
+// served lists the versions to look for, preferred first.
+var served = []string{"v1", "v1beta1"}
+
+// Publisher writes the hub trust bundle to a ClusterTrustBundle.
 type Publisher struct {
-	client certificatesv1beta1client.ClusterTrustBundlesGetter
+	client    dynamic.Interface
+	discovery discovery.DiscoveryInterface
+
+	mu  sync.Mutex
+	gvr *schema.GroupVersionResource
 }
 
-// NewPublisher returns a Publisher using the given client.
-func NewPublisher(client certificatesv1beta1client.ClusterTrustBundlesGetter) *Publisher {
-	return &Publisher{client: client}
+// NewPublisher returns a Publisher. discovery picks the served
+// ClusterTrustBundle version on first use.
+func NewPublisher(client dynamic.Interface, discovery discovery.DiscoveryInterface) *Publisher {
+	return &Publisher{client: client, discovery: discovery}
+}
+
+func (p *Publisher) resource() (schema.GroupVersionResource, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.gvr != nil {
+		return *p.gvr, nil
+	}
+	for _, version := range served {
+		list, err := p.discovery.ServerResourcesForGroupVersion(group + "/" + version)
+		if err != nil {
+			continue
+		}
+		for _, r := range list.APIResources {
+			if r.Name == resource {
+				gvr := schema.GroupVersionResource{Group: group, Version: version, Resource: resource}
+				p.gvr = &gvr
+				return gvr, nil
+			}
+		}
+	}
+	return schema.GroupVersionResource{}, fmt.Errorf("the API server does not serve ClusterTrustBundles; " +
+		"SPIFFE identities need Kubernetes 1.37, or 1.33 or later with the certificates.k8s.io/v1beta1 ClusterTrustBundle API enabled")
 }
 
 // Publish creates or updates the ClusterTrustBundle so it holds exactly certs.
@@ -42,18 +83,22 @@ func (p *Publisher) Publish(ctx context.Context, certs []*x509.Certificate) erro
 	if len(certs) == 0 {
 		return fmt.Errorf("refusing to publish an empty hub trust bundle")
 	}
+	gvr, err := p.resource()
+	if err != nil {
+		return err
+	}
 	bundle := EncodePEM(certs)
+	client := p.client.Resource(gvr)
 
-	existing, err := p.client.ClusterTrustBundles().Get(ctx, Name, metav1.GetOptions{})
+	existing, err := client.Get(ctx, Name, metav1.GetOptions{})
 	if errors.IsNotFound(err) {
-		_, err = p.client.ClusterTrustBundles().Create(ctx, &certificatesv1beta1.ClusterTrustBundle{
-			ObjectMeta: metav1.ObjectMeta{Name: Name},
-			Spec: certificatesv1beta1.ClusterTrustBundleSpec{
-				SignerName:  SignerName,
-				TrustBundle: bundle,
-			},
-		}, metav1.CreateOptions{})
-		if err != nil {
+		obj := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": gvr.GroupVersion().String(),
+			"kind":       "ClusterTrustBundle",
+			"metadata":   map[string]interface{}{"name": Name},
+			"spec":       map[string]interface{}{"signerName": SignerName, "trustBundle": bundle},
+		}}
+		if _, err := client.Create(ctx, obj, metav1.CreateOptions{}); err != nil {
 			return fmt.Errorf("failed to create ClusterTrustBundle %s: %w", Name, err)
 		}
 		return nil
@@ -62,16 +107,20 @@ func (p *Publisher) Publish(ctx context.Context, certs []*x509.Certificate) erro
 		return fmt.Errorf("failed to get ClusterTrustBundle %s: %w", Name, err)
 	}
 
-	if existing.Spec.SignerName != SignerName {
-		return fmt.Errorf("ClusterTrustBundle %s belongs to signer %q, not %q; delete it so the hub can recreate it",
-			Name, existing.Spec.SignerName, SignerName)
+	signer, _, _ := unstructured.NestedString(existing.Object, "spec", "signerName")
+	if signer != SignerName {
+		return fmt.Errorf("ClusterTrustBundle %s belongs to signer %q, not %q; delete it so it can be recreated",
+			Name, signer, SignerName)
 	}
-	if existing.Spec.TrustBundle == bundle {
+	current, _, _ := unstructured.NestedString(existing.Object, "spec", "trustBundle")
+	if current == bundle {
 		return nil
 	}
 	updated := existing.DeepCopy()
-	updated.Spec.TrustBundle = bundle
-	if _, err := p.client.ClusterTrustBundles().Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
+	if err := unstructured.SetNestedField(updated.Object, bundle, "spec", "trustBundle"); err != nil {
+		return err
+	}
+	if _, err := client.Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("failed to update ClusterTrustBundle %s: %w", Name, err)
 	}
 	return nil

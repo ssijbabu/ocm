@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apiserver/pkg/server/healthz"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -265,7 +266,11 @@ func (o *SpokeAgentConfig) RunSpokeAgentWithSpokeInformers(ctx context.Context,
 
 	selfManaged, isSelfManaged := o.driver.(register.SelfManagedDriver)
 	if isSelfManaged {
-		if err := selfManaged.Start(ctx, spokeKubeClient); err != nil {
+		spokeDynamicClient, err := dynamic.NewForConfig(spokeClientConfig)
+		if err != nil {
+			return err
+		}
+		if err := selfManaged.Start(ctx, spokeKubeClient, spokeDynamicClient); err != nil {
 			return err
 		}
 	} else {

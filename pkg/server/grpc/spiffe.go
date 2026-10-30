@@ -41,7 +41,7 @@ func setupSPIFFE(ctx context.Context, configPath string, clients *Clients, close
 		return nil, fmt.Errorf("failed to set up the hub CA signer: %w", err)
 	}
 
-	publisher := trustbundle.NewPublisher(clients.KubeClient.CertificatesV1beta1())
+	publisher := trustbundle.NewPublisher(clients.DynamicClient, clients.KubeClient.Discovery())
 	sourceOpts := cfg.SourceOptions()
 	sourceOpts.OnTrustBundleChange = publisher.Publish
 	source, err := svid.NewServerSVIDSource(signer, sourceOpts)

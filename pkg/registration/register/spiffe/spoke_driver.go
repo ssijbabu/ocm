@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -168,9 +169,9 @@ func NewDriver(opt *Option, secretOption register.SecretOption) (*Driver, error)
 
 // Start obtains and renews the registration agent SVID, stores the hub trust
 // bundle in the spoke's ClusterTrustBundle, and reports rotated issuer keys.
-func (d *Driver) Start(ctx context.Context, spokeKubeClient kubernetes.Interface) error {
+func (d *Driver) Start(ctx context.Context, spokeKubeClient kubernetes.Interface, spokeDynamicClient dynamic.Interface) error {
 	manager, tlsConfig, err := d.opt.StartManager(ctx, d.clusterName,
-		trustbundle.NewPublisher(spokeKubeClient.CertificatesV1beta1()).Publish)
+		trustbundle.NewPublisher(spokeDynamicClient, spokeKubeClient.Discovery()).Publish)
 	if err != nil {
 		return err
 	}
