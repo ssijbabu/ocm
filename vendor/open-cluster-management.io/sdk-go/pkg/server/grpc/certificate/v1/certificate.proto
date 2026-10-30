@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package io.openclustermanagement.certificate.v1;
+
+option go_package = "open-cluster-management.io/sdk-go/pkg/server/grpc/certificate/v1";
+
+// CertificateService issues SPIFFE X.509-SVIDs to managed cluster agents.
+//
+// CreateCertificate is the only call the hub accepts without a client
+// certificate, because a new agent has none yet: the agent authenticates with
+// the projected ServiceAccount token in the request. The hub gives the same
+// answer for every refusal.
+service CertificateService {
+  // CreateCertificate returns an agent SVID for the key in the certificate
+  // request, and the current hub trust bundle.
+  rpc CreateCertificate(CreateCertificateRequest) returns (CreateCertificateResponse) {}
+
+  // ReportIssuerKeys reports the managed cluster's new token signing keys after
+  // a rotation. The caller must present the registration agent SVID of the
+  // cluster. The hub records the keys for a hub admin to approve; it never
+  // applies them on its own.
+  rpc ReportIssuerKeys(ReportIssuerKeysRequest) returns (ReportIssuerKeysResponse) {}
+}
+
+message CreateCertificateRequest {
+  // cluster_name is the managed cluster the agent belongs to.
+  string cluster_name = 1;
+  // addon_name is set when an add-on agent asks for its SVID.
+  string addon_name = 2;
+  // csr is a DER-encoded PKCS#10 certificate request. Only its public key is
+  // used; the hub sets every other field from verified data.
+  bytes csr = 3;
+  // token is the agent's projected ServiceAccount token.
+  string token = 4;
+}
+
+message CreateCertificateResponse {
+  // certificate_chain is the DER-encoded agent SVID, leaf first.
+  repeated bytes certificate_chain = 1;
+  // trust_bundle holds the DER-encoded hub CA certificates.
+  repeated bytes trust_bundle = 2;
+}
+
+message ReportIssuerKeysRequest {
+  string cluster_name = 1;
+  // jwks is the managed cluster issuer's JSON Web Key Set.
+  bytes jwks = 2;
+}
+
+message ReportIssuerKeysResponse {}

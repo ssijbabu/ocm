@@ -1,0 +1,13 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: ocm-{{ .ClusterManagerName }}-grpc-server-identity
+{{ if gt (len .Labels) 0 }}
+  labels:
+  {{ range $key, $value := .Labels }}
+    "{{ $key }}": "{{ $value }}"
+  {{ end }}
+{{ end }}
+spec:
+  policyName: ocm-{{ .ClusterManagerName }}-grpc-server-identity
+  validationActions: ["Deny"]

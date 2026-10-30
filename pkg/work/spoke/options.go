@@ -6,6 +6,8 @@ import (
 
 	"github.com/spf13/pflag"
 
+	"open-cluster-management.io/ocm/pkg/common/spiffe/agent"
+	"open-cluster-management.io/ocm/pkg/registration/register/spiffe"
 	"open-cluster-management.io/ocm/pkg/work/spoke/objectreader"
 )
 
@@ -29,6 +31,14 @@ type WorkloadAgentOptions struct {
 	HubClusterName string
 
 	ObjectReaderOption *objectreader.Options
+
+	// SPIFFE makes the work agent use a SPIFFE identity with the grpc
+	// workload source driver.
+	SPIFFE *spiffe.Option
+	// SPIFFEClientCertificate, when set, supplies the agent SVID instead of the
+	// work agent obtaining its own. The singleton klusterlet agent sets it to
+	// the registration agent's, since both run as the same ServiceAccount.
+	SPIFFEClientCertificate agent.ClientCertificateFunc
 }
 
 // NewWorkloadAgentOptions returns the flags with default value set
@@ -41,6 +51,7 @@ func NewWorkloadAgentOptions() *WorkloadAgentOptions {
 		WorkloadSourceConfig:                   "/spoke/hub-kubeconfig/kubeconfig",
 		DefaultUserAgent:                       defaultUserAgent,
 		ObjectReaderOption:                     objectreader.NewOptions(),
+		SPIFFE:                                 spiffe.NewOption(),
 		WorkloadAgentWorkers:                   10,
 	}
 }
@@ -75,6 +86,12 @@ func (o *WorkloadAgentOptions) AddFlags(fs *pflag.FlagSet) {
 func (o *WorkloadAgentOptions) Validate() error {
 	if o.WorkloadAgentWorkers < 1 {
 		return fmt.Errorf("workload-agent-workers must be >= 1, got %d", o.WorkloadAgentWorkers)
+	}
+	if o.SPIFFE.Enabled() && o.WorkloadSourceDriver != "grpc" {
+		return fmt.Errorf("SPIFFE identities require the grpc workload source driver")
+	}
+	if err := o.SPIFFE.Validate(); err != nil {
+		return err
 	}
 	return nil
 }

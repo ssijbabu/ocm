@@ -519,12 +519,32 @@ spec:
                               items:
                                 type: string
                               type: array
+                            credentialSource:
+                              default: IRSA
+                              description: |-
+                                credentialSource selects how AWS credentials are obtained. IRSA annotates the service
+                                accounts with eks.amazonaws.com/role-arn; PodIdentity leaves them unannotated so an
+                                EKS Pod Identity association is used instead.
+                              enum:
+                              - IRSA
+                              - PodIdentity
+                              type: string
                             hubClusterArn:
                               description: |-
                                 This represents the hub cluster ARN
                                 Example - arn:aws:eks:us-west-2:123456789010:cluster/hub-cluster1
                                 Non-commercial partitions are supported too, e.g. arn:aws-us-gov:eks:us-gov-west-1:123456789010:cluster/hub-cluster1
                               pattern: ^arn:aws(?:-[a-z0-9]+)*:eks:([a-zA-Z0-9-]+):(\d{12}):cluster/([a-zA-Z0-9-]+)$
+                              type: string
+                            resourceManagement:
+                              default: Managed
+                              description: |-
+                                resourceManagement controls whether the hub creates and deletes the per-cluster
+                                ocm-hub-<suffix> IAM roles and their EKS access entries. With UseExisting both must be
+                                provisioned ahead of time, the hub only verifies that the access entry exists, and Tags is ignored.
+                              enum:
+                              - Managed
+                              - UseExisting
                               type: string
                             tags:
                               description: |-
@@ -554,6 +574,124 @@ spec:
                               items:
                                 type: string
                               type: array
+                            spiffe:
+                              description: |-
+                                spiffe switches the gRPC driver to SPIFFE identities: agents authenticate
+                                with their own projected ServiceAccount tokens and receive short-lived
+                                SPIFFE certificates signed by a hub CA held in an external KMS. No CA key,
+                                serving key or bootstrap token is stored in a Secret on the hub.
+                              properties:
+                                agentSVIDLifetime:
+                                  description: agentSVIDLifetime is the lifetime of agent SVIDs. Defaults to 1h.
+                                  type: string
+                                dnsNames:
+                                  description: |-
+                                    dnsNames are added to the hub server SVID. Agents identify the hub by its
+                                    SPIFFE ID, so load balancers in front of the gRPC server must pass TLS through.
+                                  items:
+                                    type: string
+                                  type: array
+                                podLabels:
+                                  additionalProperties:
+                                    type: string
+                                  description: podLabels are copied to the gRPC server's pods.
+                                  type: object
+                                serviceAccountAnnotations:
+                                  additionalProperties:
+                                    type: string
+                                  description: |-
+                                    serviceAccountAnnotations are copied to the gRPC server's ServiceAccount,
+                                    for example to link it to the KMS provider's workload identity.
+                                  type: object
+                                signer:
+                                  description: signer selects the external KMS that holds the hub CA key.
+                                  properties:
+                                    azureKeyVault:
+                                      description: azureKeyVault is required when type is AzureKeyVault.
+                                      properties:
+                                        certificateName:
+                                          description: |-
+                                            certificateName is the Key Vault certificate holding the hub CA. Its key
+                                            must be a non-exportable EC-HSM key.
+                                          type: string
+                                        vaultURL:
+                                          description: vaultURL is the vault's URL, for example https://my-vault.vault.azure.net.
+                                          pattern: ^https://
+                                          type: string
+                                      required:
+                                      - certificateName
+                                      - vaultURL
+                                      type: object
+                                    openBao:
+                                      description: openBao is required when type is OpenBao.
+                                      properties:
+                                        address:
+                                          description: address of the OpenBao server.
+                                          pattern: ^https://
+                                          type: string
+                                        authMount:
+                                          description: authMount is where the Kubernetes auth method is mounted.
+                                            Defaults to kubernetes.
+                                          type: string
+                                        authRole:
+                                          description: authRole is the Kubernetes auth role bound to the gRPC
+                                            server's ServiceAccount.
+                                          type: string
+                                        certificatePath:
+                                          description: |-
+                                            certificatePath is the KV v2 API path of the secret whose certificate
+                                            field holds the hub CA certificate, for example secret/data/ocm/spiffe-ca.
+                                          type: string
+                                        keyName:
+                                          description: keyName is the non-exportable transit key holding the hub
+                                            CA key.
+                                          type: string
+                                        namespace:
+                                          description: namespace is the OpenBao namespace, if namespaces are used.
+                                          type: string
+                                        tokenAudience:
+                                          description: |-
+                                            tokenAudience is the audience of the token the gRPC server presents to
+                                            OpenBao. Defaults to openbao.
+                                          type: string
+                                        transitMount:
+                                          description: transitMount is where the transit engine is mounted. Defaults
+                                            to transit.
+                                          type: string
+                                      required:
+                                      - address
+                                      - authRole
+                                      - certificatePath
+                                      - keyName
+                                      type: object
+                                    type:
+                                      description: type of the KMS.
+                                      enum:
+                                      - AzureKeyVault
+                                      - OpenBao
+                                      type: string
+                                  required:
+                                  - type
+                                  type: object
+                                tokenAudience:
+                                  description: |-
+                                    tokenAudience is the audience agents request on their projected tokens.
+                                    It must be unique to this hub so a token sent to one hub cannot be
+                                    replayed at another.
+                                  maxLength: 255
+                                  minLength: 1
+                                  type: string
+                                trustDomain:
+                                  description: trustDomain is this hub's SPIFFE trust domain. It must be unique
+                                    to the hub.
+                                  maxLength: 255
+                                  pattern: ^[a-z0-9._-]+$
+                                  type: string
+                              required:
+                              - signer
+                              - tokenAudience
+                              - trustDomain
+                              type: object
                           type: object
                       required:
                       - authType

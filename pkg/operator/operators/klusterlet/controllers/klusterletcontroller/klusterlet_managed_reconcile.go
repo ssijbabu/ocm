@@ -42,6 +42,14 @@ var managedStaticResourceFiles = []string{
 	"klusterlet/managed/klusterlet-work-clusterrolebinding-execution-admin.yaml",
 }
 
+// managedSPIFFEResourceFiles only apply when the agents use SPIFFE identities.
+var managedSPIFFEResourceFiles = []string{
+	"klusterlet/managed/klusterlet-spiffe-clusterrole.yaml",
+	"klusterlet/managed/klusterlet-spiffe-clusterrolebinding.yaml",
+	"klusterlet/managed/klusterlet-spiffe-admission-policy.yaml",
+	"klusterlet/managed/klusterlet-spiffe-admission-policy-binding.yaml",
+}
+
 // managedReconcile apply resources to managed clusters
 type managedReconcile struct {
 	managedClusterClients *managedClusterClients
@@ -103,10 +111,15 @@ func (r *managedReconcile) reconcile(ctx context.Context, klusterlet *operatorap
 			helpers.SetRelatedResourcesStatusesWithObj(ctx, &klusterlet.Status.RelatedResources, objData)
 			return objData, nil
 		},
-		managedStaticResourceFiles...,
+		managedResourceFiles(config)...,
 	)
 
 	var errs []error
+	if config.RegistrationDriver.SPIFFE == nil {
+		if err := removeStaticResources(ctx, r.managedClusterClients.kubeClient, nil, managedSPIFFEResourceFiles, config); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	for _, result := range resourceResults {
 		if result.Error != nil {
 			errs = append(errs, fmt.Errorf("%q (%T): %v", result.File, result.Type, result.Error))
@@ -169,7 +182,7 @@ func (r *managedReconcile) clean(ctx context.Context, klusterlet *operatorapiv1.
 	}
 
 	if err := removeStaticResources(ctx, r.managedClusterClients.kubeClient, r.managedClusterClients.apiExtensionClient,
-		managedStaticResourceFiles, config); err != nil {
+		append(managedStaticResourceFiles, managedSPIFFEResourceFiles...), config); err != nil {
 		return klusterlet, reconcileStop, err
 	}
 
@@ -257,4 +270,11 @@ func (r *managedReconcile) hasActiveKlusterletAgentNamespaces(ctx context.Contex
 	}
 
 	return false, nil
+}
+
+func managedResourceFiles(config klusterletConfig) []string {
+	if config.RegistrationDriver.SPIFFE == nil {
+		return managedStaticResourceFiles
+	}
+	return append(append([]string{}, managedStaticResourceFiles...), managedSPIFFEResourceFiles...)
 }

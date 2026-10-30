@@ -1,0 +1,31 @@
+# Permissions the gRPC server needs only in SPIFFE mode. Publishing the hub
+# trust bundle needs attest on the OCM SPIFFE signer: without it the
+# kube-apiserver refuses writes to the signer-linked ClusterTrustBundle, so no
+# other component can change the hub trust bundle.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-cluster-management:{{ .ClusterManagerName }}-grpc-server-spiffe
+{{ if gt (len .Labels) 0 }}
+  labels:
+  {{ range $key, $value := .Labels }}
+    "{{ $key }}": "{{ $value }}"
+  {{ end }}
+{{ end }}
+rules:
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["clustertrustbundles"]
+  verbs: ["get", "list", "watch", "create", "update"]
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["signers"]
+  resourceNames: ["open-cluster-management.io/spiffe-hub"]
+  verbs: ["attest"]
+- apiGroups: ["cluster.open-cluster-management.io"]
+  resources: ["managedclusteridentities"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["cluster.open-cluster-management.io"]
+  resources: ["managedclusteridentities/status"]
+  verbs: ["update"]
+- apiGroups: ["addon.open-cluster-management.io"]
+  resources: ["clustermanagementaddons"]
+  verbs: ["get", "list", "watch"]

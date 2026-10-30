@@ -23,9 +23,11 @@ import (
 	cemetrics "open-cluster-management.io/sdk-go/pkg/cloudevents/server/grpc/metrics"
 	sdkgrpc "open-cluster-management.io/sdk-go/pkg/server/grpc"
 	grpcauthn "open-cluster-management.io/sdk-go/pkg/server/grpc/authn"
+	certv1 "open-cluster-management.io/sdk-go/pkg/server/grpc/certificate/v1"
 
 	"open-cluster-management.io/ocm/pkg/server/services/addon/v1alpha1"
 	"open-cluster-management.io/ocm/pkg/server/services/addon/v1beta1"
+	"open-cluster-management.io/ocm/pkg/server/services/certificate"
 	"open-cluster-management.io/ocm/pkg/server/services/cluster"
 	"open-cluster-management.io/ocm/pkg/server/services/csr"
 	"open-cluster-management.io/ocm/pkg/server/services/event"
@@ -42,6 +44,11 @@ type GRPCServerOptions struct {
 	// These take precedence over the YAML config file loaded by LoadGRPCServerOptions.
 	TLSMinVersionOverride   string
 	TLSCipherSuitesOverride string
+
+	// SPIFFEConfig enables SPIFFE identities: the hub server SVID is signed by
+	// a hub CA in an external KMS and kept in memory, and agents authenticate
+	// with agent SVIDs. The serving certificate and client CA files are unused.
+	SPIFFEConfig string
 }
 
 func NewGRPCServerOptions() *GRPCServerOptions {
@@ -52,6 +59,7 @@ func NewGRPCServerOptions() *GRPCServerOptions {
 
 func (o *GRPCServerOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.GRPCServerConfig, "server-config", o.GRPCServerConfig, "Location of the server configuration file.")
+	fs.StringVar(&o.SPIFFEConfig, "spiffe-config", o.SPIFFEConfig, "Location of the SPIFFE configuration file. Enables SPIFFE identities.")
 	o.grpcBrokerOptions.AddFlags(fs)
 }
 
@@ -98,18 +106,41 @@ func (o *GRPCServerOptions) Run(ctx context.Context, controllerContext *controll
 			clients.AddOnInformers.Addon().V1beta1().ManagedClusterAddOns().Lister(),
 		))
 
+	var spiffeSrv *spiffeServer
+	if o.SPIFFEConfig != "" {
+		if spiffeSrv, err = setupSPIFFE(ctx, o.SPIFFEConfig, clients, grpcEventServer); err != nil {
+			return err
+		}
+	}
+
 	// start clients
 	go clients.Run(ctx)
 
 	// initialize and run grpc server
 	authorizer := grpcauthz.NewSARAuthorizer(clients.KubeClient)
-	return sdkgrpc.NewGRPCServer(serverOptions).
-		WithAuthenticator(grpcauthn.NewTokenAuthenticator(clients.KubeClient)).
-		WithAuthenticator(grpcauthn.NewMtlsAuthenticator()).
+	server := sdkgrpc.NewGRPCServer(serverOptions)
+	if spiffeSrv != nil {
+		if err := spiffeSrv.waitForServerSVID(ctx); err != nil {
+			return err
+		}
+		server = server.
+			WithTLSConfig(spiffeSrv.tlsConfig).
+			WithAuthenticator(spiffeSrv.authenticator).
+			WithUnauthenticatedMethods(certificate.CreateCertificateMethod).
+			WithSelfAuthorizedMethods(certificate.ReportIssuerKeysMethod)
+	} else {
+		server = server.
+			WithAuthenticator(grpcauthn.NewTokenAuthenticator(clients.KubeClient)).
+			WithAuthenticator(grpcauthn.NewMtlsAuthenticator())
+	}
+	return server.
 		WithUnaryAuthorizer(authorizer).
 		WithStreamAuthorizer(authorizer).
 		WithRegisterFunc(func(s *grpc.Server) {
 			pbv1.RegisterCloudEventServiceServer(s, grpcEventServer)
+			if spiffeSrv != nil {
+				certv1.RegisterCertificateServiceServer(s, spiffeSrv.certServer)
+			}
 		}).
 		WithExtraMetrics(cemetrics.CloudEventsGRPCMetrics()...).
 		Run(ctx)

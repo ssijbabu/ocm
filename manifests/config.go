@@ -54,6 +54,16 @@ type HubConfig struct {
 	GRPCServerImage                   string
 	GRPCAutoApprovedUsers             string
 	GRPCEndpointType                  string
+	// GRPCSPIFFEEnabled switches the gRPC server to SPIFFE identities.
+	GRPCSPIFFEEnabled bool
+	// GRPCSPIFFEConfig is the gRPC server's SPIFFE config file. The type has to
+	// be []byte to use the "indent" template function.
+	GRPCSPIFFEConfig                   []byte
+	GRPCSPIFFEServiceAccountAnnotations map[string]string
+	GRPCSPIFFEPodLabels                 map[string]string
+	// GRPCSPIFFEOpenBaoTokenAudience is set when the hub CA is in OpenBao: the
+	// gRPC server then gets a projected token with this audience for OpenBao.
+	GRPCSPIFFEOpenBaoTokenAudience string
 	// TLS configuration injected into all managed hub component deployments
 	TLSMinVersion   string
 	TLSCipherSuites string

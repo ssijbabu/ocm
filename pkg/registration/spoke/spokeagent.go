@@ -3,6 +3,7 @@ package spoke
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"fmt"
 	"os"
 	"time"
@@ -212,7 +213,12 @@ func (o *SpokeAgentConfig) RunSpokeAgentWithSpokeInformers(ctx context.Context,
 	// the selected bootstrap kubeconfig file path.
 	//
 	// hubValiedConfig is a function to check if the hub client config is valid.
-	if features.SpokeMutableFeatureGate.Enabled(ocmfeature.MultipleHubs) {
+	// SPIFFE mode has no bootstrap kubeconfig: the agent authenticates with its
+	// projected ServiceAccount token.
+	spiffeMode := o.registrationOption.RegisterDriverOption.SPIFFEEnabled()
+	if spiffeMode {
+		o.currentBootstrapKubeConfig = ""
+	} else if features.SpokeMutableFeatureGate.Enabled(ocmfeature.MultipleHubs) {
 		index, err := selectBootstrapKubeConfigs(ctx, o.agentOptions.SpokeClusterName, o.agentOptions.
 			HubKubeconfigFile, o.registrationOption.BootstrapKubeconfigs)
 		if err != nil {
@@ -257,13 +263,20 @@ func (o *SpokeAgentConfig) RunSpokeAgentWithSpokeInformers(ctx context.Context,
 		return err
 	}
 
-	hubKubeconfigSecretController := registration.NewHubKubeconfigSecretController(
-		o.agentOptions.HubKubeconfigDir, o.agentOptions.ComponentNamespace, o.registrationOption.HubKubeconfigSecret,
-		// the hub kubeconfig secret stored in the cluster where the agent pod runs
-		managementKubeClient.CoreV1(),
-		secretInformer,
-	)
-	go hubKubeconfigSecretController.Run(ctx, 1)
+	selfManaged, isSelfManaged := o.driver.(register.SelfManagedDriver)
+	if isSelfManaged {
+		if err := selfManaged.Start(ctx, spokeKubeClient); err != nil {
+			return err
+		}
+	} else {
+		hubKubeconfigSecretController := registration.NewHubKubeconfigSecretController(
+			o.agentOptions.HubKubeconfigDir, o.agentOptions.ComponentNamespace, o.registrationOption.HubKubeconfigSecret,
+			// the hub kubeconfig secret stored in the cluster where the agent pod runs
+			managementKubeClient.CoreV1(),
+			secretInformer,
+		)
+		go hubKubeconfigSecretController.Run(ctx, 1)
+	}
 	go namespacedManagementKubeInformerFactory.Start(ctx.Done())
 
 	// check if there already exists a valid client config for hub
@@ -278,7 +291,17 @@ func (o *SpokeAgentConfig) RunSpokeAgentWithSpokeInformers(ctx context.Context,
 	// exists a valid client config for hub or not, the controller will be started and then stopped immediately
 	// in scenario #2 and #3, which results in an error message in log: 'Observed a panic: timeout waiting for
 	// informer cache'
-	if !ok {
+	if !ok && isSelfManaged {
+		// The hub admin accepts the cluster; the driver obtains its own
+		// credentials. Wait until it has them.
+		logger.Info("Waiting for the agent SVID; the hub answers not ready until the cluster is accepted")
+		if err := wait.PollUntilContextCancel(ctx, 1*time.Second, true, o.internalHubConfigValidFunc); err != nil {
+			if err != context.Canceled {
+				return fmt.Errorf("failed to obtain the agent SVID: %w", err)
+			}
+			return nil
+		}
+	} else if !ok {
 		// create a ClientCertForHubController for spoke agent bootstrap
 		// the bootstrap informers are supposed to be terminated after completing the bootstrap process.
 		bootstrapCtx, stopBootstrap := context.WithCancel(ctx)
@@ -368,7 +391,12 @@ func (o *SpokeAgentConfig) RunSpokeAgentWithSpokeInformers(ctx context.Context,
 	}
 
 	// get hub hash for namespace management
-	hubHash, err := o.getHubHash()
+	var hubHash string
+	if isSelfManaged {
+		hubHash = selfManaged.HubHash()
+	} else {
+		hubHash, err = o.getHubHash()
+	}
 	if err != nil {
 		return fmt.Errorf("failed to get hub hash: %w", err)
 	}
@@ -486,7 +514,9 @@ func (o *SpokeAgentConfig) RunSpokeAgentWithSpokeInformers(ctx context.Context,
 		go aboutInformers.Start(ctx.Done())
 	}
 
-	go secretController.Run(ctx, 1)
+	if !isSelfManaged {
+		go secretController.Run(ctx, 1)
+	}
 	go managedClusterLeaseController.Run(ctx, 1)
 	go managedClusterHealthCheckController.Run(ctx, 1)
 	if o.registrationOption.ReportHostingCluster {
@@ -513,6 +543,17 @@ func (o *SpokeAgentConfig) RunSpokeAgentWithSpokeInformers(ctx context.Context,
 
 	<-ctx.Done()
 	return nil
+}
+
+// SPIFFEClientCertificate returns the agent SVID when the agent uses SPIFFE
+// identities, or an empty certificate before it has one.
+func (o *SpokeAgentConfig) SPIFFEClientCertificate(info *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+	if d, ok := o.driver.(interface {
+		ClientCertificate(*tls.CertificateRequestInfo) (*tls.Certificate, error)
+	}); ok {
+		return d.ClientCertificate(info)
+	}
+	return &tls.Certificate{}, nil
 }
 
 func (o *SpokeAgentConfig) IsHubKubeConfigValid(ctx context.Context) (bool, error) {

@@ -15,6 +15,7 @@ type ClusterV1alpha1Interface interface {
 	RESTClient() rest.Interface
 	AddOnPlacementScoresGetter
 	ClusterClaimsGetter
+	ManagedClusterIdentitiesGetter
 }
 
 // ClusterV1alpha1Client is used to interact with features provided by the cluster.open-cluster-management.io group.
@@ -28,6 +29,10 @@ func (c *ClusterV1alpha1Client) AddOnPlacementScores(namespace string) AddOnPlac
 
 func (c *ClusterV1alpha1Client) ClusterClaims() ClusterClaimInterface {
 	return newClusterClaims(c)
+}
+
+func (c *ClusterV1alpha1Client) ManagedClusterIdentities() ManagedClusterIdentityInterface {
+	return newManagedClusterIdentities(c)
 }
 
 // NewForConfig creates a new ClusterV1alpha1Client for the given config.

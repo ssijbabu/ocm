@@ -21,6 +21,10 @@ func (c *FakeClusterV1alpha1) ClusterClaims() v1alpha1.ClusterClaimInterface {
 	return newFakeClusterClaims(c)
 }
 
+func (c *FakeClusterV1alpha1) ManagedClusterIdentities() v1alpha1.ManagedClusterIdentityInterface {
+	return newFakeManagedClusterIdentities(c)
+}
+
 // RESTClient returns a RESTClient that is used to communicate
 // with API server by this client implementation.
 func (c *FakeClusterV1alpha1) RESTClient() rest.Interface {

@@ -49,6 +49,7 @@ var (
 		"cluster-manager/hub/crds/0000_03_addon.open-cluster-management.io_addontemplates.crd.yaml",
 		"cluster-manager/hub/crds/0000_03_clusters.open-cluster-management.io_placementdecisions.crd.yaml",
 		"cluster-manager/hub/crds/0000_05_clusters.open-cluster-management.io_addonplacementscores.crd.yaml",
+		"cluster-manager/hub/crds/0000_06_clusters.open-cluster-management.io_managedclusteridentities.crd.yaml",
 	}
 
 	hubClusterProfileCRDResourceFiles = []string{

@@ -637,7 +637,7 @@ func TestSyncDeploy(t *testing.T) {
 		"open-cluster-management.io/cluster-name": "test"}
 	clusterManager := newClusterManager("testhub")
 	clusterManager.SetLabels(labels)
-	assertDeployments(t, clusterManager, 30, 12)
+	assertDeployments(t, clusterManager, 30, 13)
 }
 
 func TestSyncDeployWithGRPCAuthEnabled(t *testing.T) {
@@ -655,7 +655,7 @@ func TestSyncDeployWithGRPCAuthEnabled(t *testing.T) {
 			},
 		},
 	}
-	assertDeployments(t, clusterManager, 34, 12)
+	assertDeployments(t, clusterManager, 34, 13)
 }
 
 func TestSyncDeployNoWebhook(t *testing.T) {
@@ -695,7 +695,7 @@ func TestSyncDeployNoWebhook(t *testing.T) {
 		}
 	}
 	// Check if resources are created as expected
-	testingcommon.AssertEqualNumber(t, len(createCRDObjects), 12)
+	testingcommon.AssertEqualNumber(t, len(createCRDObjects), 13)
 }
 
 // TestSyncDeployWithoutCaBundle tests that sync requeues when the CA bundle ConfigMap
@@ -728,7 +728,7 @@ func TestSyncDelete(t *testing.T) {
 	now := metav1.Now()
 	clusterManager.ObjectMeta.SetDeletionTimestamp(&now)
 
-	assertDeletion(t, clusterManager, 32, 16)
+	assertDeletion(t, clusterManager, 32, 17)
 }
 
 func TestSyncDeleteWithGRPCAuthEnabled(t *testing.T) {
@@ -745,7 +745,7 @@ func TestSyncDeleteWithGRPCAuthEnabled(t *testing.T) {
 	}
 	now := metav1.Now()
 	clusterManager.ObjectMeta.SetDeletionTimestamp(&now)
-	assertDeletion(t, clusterManager, 36, 16)
+	assertDeletion(t, clusterManager, 36, 17)
 }
 
 // TestDeleteCRD test delete crds

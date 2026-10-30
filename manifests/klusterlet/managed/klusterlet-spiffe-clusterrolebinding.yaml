@@ -1,0 +1,23 @@
+# The registration agent writes the trust bundle. The singleton klusterlet
+# agent runs both agents as the work ServiceAccount, so it is bound too.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: open-cluster-management:{{ .KlusterletName }}-spiffe:agent
+  labels:
+    {{ if gt (len .Labels) 0 }}
+    {{ range $key, $value := .Labels }}
+    "{{ $key }}": "{{ $value }}"
+    {{ end }}
+    {{ end }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: open-cluster-management:{{ .KlusterletName }}-spiffe:agent
+subjects:
+  - kind: ServiceAccount
+    name: {{ .RegistrationServiceAccount }}
+    namespace: {{ .KlusterletNamespace }}
+  - kind: ServiceAccount
+    name: {{ .WorkServiceAccount }}
+    namespace: {{ .KlusterletNamespace }}

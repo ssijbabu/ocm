@@ -149,6 +149,10 @@ func CleanUpStaticObject(
 		err = client.AdmissionregistrationV1().ValidatingWebhookConfigurations().Delete(ctx, t.Name, metav1.DeleteOptions{})
 	case *admissionv1.MutatingWebhookConfiguration:
 		err = client.AdmissionregistrationV1().MutatingWebhookConfigurations().Delete(ctx, t.Name, metav1.DeleteOptions{})
+	case *admissionv1.ValidatingAdmissionPolicy:
+		err = client.AdmissionregistrationV1().ValidatingAdmissionPolicies().Delete(ctx, t.Name, metav1.DeleteOptions{})
+	case *admissionv1.ValidatingAdmissionPolicyBinding:
+		err = client.AdmissionregistrationV1().ValidatingAdmissionPolicyBindings().Delete(ctx, t.Name, metav1.DeleteOptions{})
 	case *networkingv1.NetworkPolicy:
 		err = client.NetworkingV1().NetworkPolicies(t.Namespace).Delete(ctx, t.Name, metav1.DeleteOptions{})
 	default:
@@ -478,6 +482,10 @@ func GenerateRelatedResource(objBytes []byte) (operatorapiv1.RelatedResourceMeta
 		relatedResource = newRelatedResource(admissionv1.SchemeGroupVersion.WithResource("validatingwebhookconfigurations"), requiredObj)
 	case *admissionv1.MutatingWebhookConfiguration:
 		relatedResource = newRelatedResource(admissionv1.SchemeGroupVersion.WithResource("mutatingwebhookconfigurations"), requiredObj)
+	case *admissionv1.ValidatingAdmissionPolicy:
+		relatedResource = newRelatedResource(admissionv1.SchemeGroupVersion.WithResource("validatingadmissionpolicies"), requiredObj)
+	case *admissionv1.ValidatingAdmissionPolicyBinding:
+		relatedResource = newRelatedResource(admissionv1.SchemeGroupVersion.WithResource("validatingadmissionpolicybindings"), requiredObj)
 	case *apiregistrationv1.APIService:
 		relatedResource = newRelatedResource(apiregistrationv1.SchemeGroupVersion.WithResource("apiservices"), requiredObj)
 	case *appsv1.Deployment:
@@ -974,6 +982,27 @@ func GRPCAuthEnabled(cm *operatorapiv1.ClusterManager) bool {
 	}
 
 	return false
+}
+
+// GRPCSPIFFEConfig returns the SPIFFE configuration of the gRPC registration
+// driver, or nil when the gRPC driver uses certificates.
+func GRPCSPIFFEConfig(cm *operatorapiv1.ClusterManager) *operatorapiv1.SPIFFEHubConfig {
+	if cm.Spec.RegistrationConfiguration == nil {
+		return nil
+	}
+	for _, driver := range cm.Spec.RegistrationConfiguration.RegistrationDrivers {
+		if driver.AuthType == operatorapiv1.GRPCAuthType && driver.GRPC != nil && driver.GRPC.SPIFFE != nil {
+			return driver.GRPC.SPIFFE
+		}
+	}
+	return nil
+}
+
+// GRPCServingCertNeeded reports whether the gRPC server needs the operator to
+// maintain its serving certificate Secret. In SPIFFE mode it does not: the
+// hub server SVID is signed through the KMS and kept in memory.
+func GRPCServingCertNeeded(cm *operatorapiv1.ClusterManager) bool {
+	return GRPCAuthEnabled(cm) && GRPCSPIFFEConfig(cm) == nil
 }
 
 func GRPCServerHostNames(kubeClient kubernetes.Interface, clusterManagerNamespace string, cm *operatorapiv1.ClusterManager) ([]string, error) {

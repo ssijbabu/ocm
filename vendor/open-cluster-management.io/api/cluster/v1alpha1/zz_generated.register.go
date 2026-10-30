@@ -51,6 +51,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&AddOnPlacementScoreList{},
 		&ClusterClaim{},
 		&ClusterClaimList{},
+		&ManagedClusterIdentity{},
+		&ManagedClusterIdentityList{},
 	)
 	// AddToGroupVersion allows the serialization of client types like ListOptions.
 	v1.AddToGroupVersion(scheme, SchemeGroupVersion)

@@ -66,6 +66,10 @@ spec:
           - "--workload-source-driver=grpc"
           - "--workload-source-config=/spoke/hub-kubeconfig/config.yaml"
           - "--cloudevents-client-id={{ .ClusterName }}-work-agent"
+          {{if .RegistrationDriver.SPIFFE}}
+          - "--spiffe-trust-domain={{ .RegistrationDriver.SPIFFE.TrustDomain }}"
+          - "--spiffe-grpc-server={{ .RegistrationDriver.SPIFFE.GRPCServerAddress }}"
+          {{end}}
           {{else}}
           - "--workload-source-driver=kube"
           - "--workload-source-config=/spoke/hub-kubeconfig/kubeconfig"
@@ -83,7 +87,9 @@ spec:
           - "--spoke-kubeconfig=/spoke/config/kubeconfig"
           - "--terminate-on-files=/spoke/config/kubeconfig"
           {{end}}
+          {{if not .RegistrationDriver.SPIFFE}}
           - "--terminate-on-files=/spoke/hub-kubeconfig/kubeconfig"
+          {{end}}
           {{if .WorkStatusSyncInterval}}
           - "--status-sync-interval={{ .WorkStatusSyncInterval }}"
           {{else if eq .Replica 1}}
@@ -124,9 +130,18 @@ spec:
           runAsNonRoot: true
           readOnlyRootFilesystem: true
         volumeMounts:
+        {{if .RegistrationDriver.SPIFFE}}
+        - name: hub-token
+          mountPath: "/var/run/secrets/open-cluster-management.io/hub-token"
+          readOnly: true
+        - name: hub-trust-bundle
+          mountPath: "/var/run/secrets/open-cluster-management.io/hub-trust-bundle"
+          readOnly: true
+        {{else}}
         - name: hub-kubeconfig-secret
           mountPath: "/spoke/hub-kubeconfig"
           readOnly: true
+        {{end}}
         - name: tmpdir
           mountPath: /tmp
         {{if eq .RegistrationDriver.AuthType "awsirsa"}}
@@ -183,9 +198,28 @@ spec:
       priorityClassName: "{{ .PriorityClassName }}"
       {{- end }}
       volumes:
+      {{if .RegistrationDriver.SPIFFE}}
+      # SPIFFE mode: a 10-minute, pod-bound token with the hub's audience, and the
+      # hub trust bundle from the spoke's ClusterTrustBundle. No Secret.
+      - name: hub-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: "{{ .RegistrationDriver.SPIFFE.TokenAudience }}"
+              expirationSeconds: 600
+              path: token
+      - name: hub-trust-bundle
+        projected:
+          sources:
+          - clusterTrustBundle:
+              signerName: open-cluster-management.io/spiffe-hub
+              labelSelector: {}
+              path: ca.crt
+      {{else}}
       - name: hub-kubeconfig-secret
         secret:
           secretName: {{ .HubKubeConfigSecret }}
+      {{end}}
       - name: tmpdir
         emptyDir: { }
       {{if eq .RegistrationDriver.AuthType "awsirsa"}}

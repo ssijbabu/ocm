@@ -11,6 +11,7 @@ import (
 	awsirsa "open-cluster-management.io/ocm/pkg/registration/register/aws_irsa"
 	"open-cluster-management.io/ocm/pkg/registration/register/csr"
 	"open-cluster-management.io/ocm/pkg/registration/register/grpc"
+	"open-cluster-management.io/ocm/pkg/registration/register/spiffe"
 	"open-cluster-management.io/ocm/pkg/registration/register/token"
 )
 
@@ -19,6 +20,7 @@ type Options struct {
 	CSROption        *csr.Option
 	AWSIRSAOption    *awsirsa.AWSOption
 	GRPCOption       *grpc.Option
+	SPIFFEOption     *spiffe.Option
 	TokenOption      *token.Option
 
 	// AddonKubeClientRegistrationAuth specifies the authentication method for addons
@@ -31,6 +33,7 @@ func NewOptions() *Options {
 		CSROption:                       csr.NewCSROption(),
 		AWSIRSAOption:                   awsirsa.NewAWSOption(),
 		GRPCOption:                      grpc.NewOptions(),
+		SPIFFEOption:                    spiffe.NewOption(),
 		TokenOption:                     token.NewTokenOption(),
 		AddonKubeClientRegistrationAuth: "csr", // default to csr
 	}
@@ -44,6 +47,7 @@ func (s *Options) AddFlags(fs *pflag.FlagSet) {
 	s.CSROption.AddFlags(fs)
 	s.AWSIRSAOption.AddFlags(fs)
 	s.GRPCOption.AddFlags(fs)
+	s.SPIFFEOption.AddFlags(fs)
 	s.TokenOption.AddFlags(fs)
 }
 
@@ -59,10 +63,18 @@ func (s *Options) Validate() error {
 	case operatorv1.AwsIrsaAuthType:
 		return s.AWSIRSAOption.Validate()
 	case operatorv1.GRPCAuthType:
+		if s.SPIFFEOption.Enabled() {
+			return s.SPIFFEOption.Validate()
+		}
 		return s.GRPCOption.Validate()
 	default:
 		return s.CSROption.Validate()
 	}
+}
+
+// SPIFFEEnabled reports whether the agent uses SPIFFE identities.
+func (s *Options) SPIFFEEnabled() bool {
+	return s.RegistrationAuth == operatorv1.GRPCAuthType && s.SPIFFEOption.Enabled()
 }
 
 func (s *Options) GetKubeClientAuth() string {
@@ -82,6 +94,9 @@ func (s *Options) Driver(secretOption register.SecretOption) (register.RegisterD
 	case operatorv1.AwsIrsaAuthType:
 		return awsirsa.NewAWSIRSADriver(s.AWSIRSAOption, secretOption), nil
 	case operatorv1.GRPCAuthType:
+		if s.SPIFFEOption.Enabled() {
+			return spiffe.NewDriver(s.SPIFFEOption, secretOption)
+		}
 		return grpc.NewGRPCDriver(s.GRPCOption, s.CSROption, secretOption)
 	default:
 		return csr.NewCSRDriver(s.CSROption, secretOption)

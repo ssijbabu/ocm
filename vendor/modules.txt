@@ -1965,7 +1965,7 @@ open-cluster-management.io/addon-framework/pkg/agent/v1alpha1
 open-cluster-management.io/addon-framework/pkg/assets
 open-cluster-management.io/addon-framework/pkg/index
 open-cluster-management.io/addon-framework/pkg/utils
-# open-cluster-management.io/api v1.4.0
+# open-cluster-management.io/api v1.4.0 => github.com/ssijbabu/api v1.3.1-0.20261030064644-a2334d45be93
 ## explicit; go 1.26.0
 open-cluster-management.io/api/addon/v1alpha1
 open-cluster-management.io/api/addon/v1beta1
@@ -2038,7 +2038,7 @@ open-cluster-management.io/api/operator/v1
 open-cluster-management.io/api/utils/work/v1/workapplier
 open-cluster-management.io/api/work/v1
 open-cluster-management.io/api/work/v1alpha1
-# open-cluster-management.io/sdk-go v1.4.0
+# open-cluster-management.io/sdk-go v1.4.0 => github.com/ssijbabu/sdk-go v1.4.1-0.20261030064657-87a7e41cfced
 ## explicit; go 1.26.0
 open-cluster-management.io/sdk-go/pkg/apis/cluster/v1alpha1
 open-cluster-management.io/sdk-go/pkg/apis/cluster/v1beta1
@@ -2101,6 +2101,7 @@ open-cluster-management.io/sdk-go/pkg/patcher
 open-cluster-management.io/sdk-go/pkg/server/grpc
 open-cluster-management.io/sdk-go/pkg/server/grpc/authn
 open-cluster-management.io/sdk-go/pkg/server/grpc/authz
+open-cluster-management.io/sdk-go/pkg/server/grpc/certificate/v1
 open-cluster-management.io/sdk-go/pkg/server/grpc/metrics
 open-cluster-management.io/sdk-go/pkg/testing
 open-cluster-management.io/sdk-go/pkg/tls
@@ -2222,3 +2223,5 @@ sigs.k8s.io/structured-merge-diff/v6/value
 ## explicit; go 1.22
 sigs.k8s.io/yaml
 sigs.k8s.io/yaml/goyaml.v3
+# open-cluster-management.io/api => github.com/ssijbabu/api v1.3.1-0.20261030064644-a2334d45be93
+# open-cluster-management.io/sdk-go => github.com/ssijbabu/sdk-go v1.4.1-0.20261030064657-87a7e41cfced

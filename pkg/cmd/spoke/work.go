@@ -30,6 +30,8 @@ func NewWorkAgent() *cobra.Command {
 	flags := cmd.Flags()
 	commonOptions.AddFlags(flags)
 	agentOption.AddFlags(flags)
+	// The singleton klusterlet agent shares the registration agent's SPIFFE flags instead.
+	agentOption.SPIFFE.AddFlags(flags)
 	utilruntime.Must(features.SpokeMutableFeatureGate.Add(ocmfeature.DefaultSpokeWorkFeatureGates))
 	features.SpokeMutableFeatureGate.AddFlag(flags)
 	// The klusterlet operator injects --tls-min-version and --tls-cipher-suites

@@ -5,6 +5,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
@@ -91,6 +92,18 @@ type RegisterDriver interface {
 
 	// BuildClients setup clients for the driver based on the secretOption and return
 	BuildClients(ctx context.Context, secretOption SecretOption, bootstrap bool) (*Clients, error)
+}
+
+// SelfManagedDriver is a RegisterDriver that obtains and renews its own
+// credentials in memory, such as SPIFFE identities. The agent starts it
+// instead of running the bootstrap flow, keeps no hub kubeconfig Secret, and
+// identifies the hub with HubHash instead of a bootstrap kubeconfig.
+type SelfManagedDriver interface {
+	RegisterDriver
+	// Start begins obtaining credentials and keeps them current until ctx ends.
+	Start(ctx context.Context, spokeKubeClient kubernetes.Interface) error
+	// HubHash identifies the hub the agent is registered with.
+	HubHash() string
 }
 
 // AddonAuthConfig provides complete configuration for addon registration,

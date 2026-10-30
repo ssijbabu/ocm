@@ -38,6 +38,8 @@ type subscriber struct {
 	clusterName string
 	dataType    types.CloudEventsDataType
 	handler     resourceHandler
+	// cancel ends the subscription stream.
+	cancel context.CancelFunc
 }
 
 var _ server.AgentEventServer = &GRPCBroker{}
@@ -139,6 +141,7 @@ func (bkr *GRPCBroker) registerSubscriber(ctx context.Context,
 	id string,
 	dataType types.CloudEventsDataType,
 	subReq *pbv1.SubscriptionRequest,
+	cancel context.CancelFunc,
 	handler resourceHandler) error {
 	logger := klog.FromContext(ctx)
 
@@ -151,10 +154,30 @@ func (bkr *GRPCBroker) registerSubscriber(ctx context.Context,
 		clusterName: subReq.ClusterName,
 		dataType:    dataType,
 		handler:     handler,
+		cancel:      cancel,
 	}
 
 	metrics.IncGRPCCESubscribersMetric(subReq.ClusterName, dataType.String())
 	return nil
+}
+
+// CloseCluster ends every subscription stream of a cluster, for example when
+// the cluster is rejected or deleted. The agents reconnect, and their requests
+// are then refused by the authorizers. It returns how many streams were closed.
+func (bkr *GRPCBroker) CloseCluster(ctx context.Context, clusterName string) int {
+	bkr.mu.RLock()
+	defer bkr.mu.RUnlock()
+
+	closed := 0
+	for id, sub := range bkr.subscribers {
+		if sub.clusterName != clusterName || sub.cancel == nil {
+			continue
+		}
+		klog.FromContext(ctx).Info("closing subscription of cluster", "id", id, "clusterName", clusterName, "dataType", sub.dataType)
+		sub.cancel()
+		closed++
+	}
+	return closed
 }
 
 // unregister a subscriber by id
@@ -206,7 +229,7 @@ func (bkr *GRPCBroker) Subscribe(subReq *pbv1.SubscriptionRequest, subServer pbv
 	sendErrCh := make(chan error, 1)
 
 	// Register the subscriber with the ID we already created and sent in the header
-	err = bkr.registerSubscriber(klog.NewContext(subCtx, logger), subID, *dataType, subReq, func(handlerCtx context.Context, subID string, evt *cloudevents.Event) error {
+	err = bkr.registerSubscriber(klog.NewContext(subCtx, logger), subID, *dataType, subReq, cancel, func(handlerCtx context.Context, subID string, evt *cloudevents.Event) error {
 		// convert the cloudevents.Event to pbv1.CloudEvent
 		// WARNING: don't use "pbEvt, err := pb.ToProto(evt)" to convert cloudevent to protobuf
 		pbEvt := &pbv1.CloudEvent{}

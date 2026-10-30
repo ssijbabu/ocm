@@ -5,6 +5,19 @@ kind: ClusterRole
 metadata:
   name: klusterlet
 rules:
+# SPIFFE mode: the operator grants these to the agents, so it must hold them.
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["clustertrustbundles"]
+  verbs: ["get", "list", "watch", "create", "update"]
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["signers"]
+  resourceNames: ["open-cluster-management.io/spiffe-hub"]
+  verbs: ["attest"]
+- nonResourceURLs: ["/openid/v1/jwks", "/.well-known/openid-configuration"]
+  verbs: ["get"]
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["validatingadmissionpolicies", "validatingadmissionpolicybindings"]
+  verbs: ["create", "get", "list", "update", "watch", "patch", "delete"]
 # Allow the registration-operator to create workload
 - apiGroups: [""]
   resources: ["configmaps", "serviceaccounts"]

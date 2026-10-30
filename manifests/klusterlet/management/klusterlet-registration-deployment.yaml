@@ -62,6 +62,7 @@ spec:
           - "/registration"
           - "agent"
           - "--spoke-cluster-name={{ .ClusterName }}"
+          {{if not .RegistrationDriver.SPIFFE}}
           {{if .MultipleHubs}}
           {{range .BootStrapKubeConfigSecrets}}
           - "--bootstrap-kubeconfigs=/spoke/{{.}}/kubeconfig"
@@ -69,6 +70,7 @@ spec:
           - "--hub-connection-timeout-seconds={{ .HubConnectionTimeoutSeconds }}"
           {{else}}
           - "--bootstrap-kubeconfig=/spoke/bootstrap/kubeconfig"
+          {{end}}
           {{end}}
           {{ if gt (len .RegistrationFeatureGates) 0 }}
           {{range .RegistrationFeatureGates}}
@@ -121,7 +123,11 @@ spec:
           - "--managed-cluster-role-suffix={{ .ManagedClusterRoleSuffix }}"
           {{end}}
           {{end}}
-          {{if eq .RegistrationDriver.AuthType "grpc"}}
+          {{if .RegistrationDriver.SPIFFE}}
+          - "--registration-auth=grpc"
+          - "--spiffe-trust-domain={{ .RegistrationDriver.SPIFFE.TrustDomain }}"
+          - "--spiffe-grpc-server={{ .RegistrationDriver.SPIFFE.GRPCServerAddress }}"
+          {{else if eq .RegistrationDriver.AuthType "grpc"}}
           - "--registration-auth=grpc"
           - "--grpc-bootstrap-config=/spoke/bootstrap/config.yaml"
           - "--grpc-config=/spoke/hub-kubeconfig/config.yaml"
@@ -146,6 +152,14 @@ spec:
           runAsNonRoot: true
           readOnlyRootFilesystem: true
         volumeMounts:
+        {{if .RegistrationDriver.SPIFFE}}
+        - name: hub-token
+          mountPath: "/var/run/secrets/open-cluster-management.io/hub-token"
+          readOnly: true
+        - name: hub-trust-bundle
+          mountPath: "/var/run/secrets/open-cluster-management.io/hub-trust-bundle"
+          readOnly: true
+        {{else}}
         {{if .MultipleHubs}}
         {{range .BootStrapKubeConfigSecrets}}
         - name: {{.}}
@@ -156,6 +170,7 @@ spec:
         - name: bootstrap-secret
           mountPath: "/spoke/bootstrap"
           readOnly: true
+        {{end}}
         {{end}}
         - name: hub-kubeconfig
           mountPath: "/spoke/hub-kubeconfig"
@@ -215,6 +230,24 @@ spec:
       priorityClassName: "{{ .PriorityClassName }}"
       {{- end }}
       volumes:
+      {{if .RegistrationDriver.SPIFFE}}
+      # SPIFFE mode: a 10-minute, pod-bound token with the hub's audience, and the
+      # hub trust bundle from the spoke's ClusterTrustBundle. No Secret.
+      - name: hub-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: "{{ .RegistrationDriver.SPIFFE.TokenAudience }}"
+              expirationSeconds: 600
+              path: token
+      - name: hub-trust-bundle
+        projected:
+          sources:
+          - clusterTrustBundle:
+              signerName: open-cluster-management.io/spiffe-hub
+              labelSelector: {}
+              path: ca.crt
+      {{else}}
       {{if .MultipleHubs}}
       {{range .BootStrapKubeConfigSecrets}}
       - name: {{.}}
@@ -225,6 +258,7 @@ spec:
       - name: bootstrap-secret
         secret:
           secretName: {{ .BootStrapKubeConfigSecret }}
+      {{end}}
       {{end}}
       - name: hub-kubeconfig
         emptyDir:

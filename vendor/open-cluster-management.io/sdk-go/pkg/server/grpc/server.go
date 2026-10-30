@@ -33,6 +33,9 @@ type GRPCServer struct {
 	authenticators    []authn.Authenticator
 	unaryAuthorizers  []authz.UnaryAuthorizer
 	streamAuthorizers []authz.StreamAuthorizer
+	tlsConfig         *tls.Config
+	unauthenticated   map[string]bool
+	selfAuthorized    map[string]bool
 }
 
 func NewGRPCServer(opt *GRPCServerOptions) *GRPCServer {
@@ -66,6 +69,42 @@ func (b *GRPCServer) WithStreamAuthorizer(authorizer authz.StreamAuthorizer) *GR
 	return b
 }
 
+// WithTLSConfig serves with the given TLS configuration instead of loading the
+// serving certificate and client CA from files. It is used when the serving
+// certificate lives only in memory, such as a SPIFFE SVID. The configured TLS
+// version bounds and cipher suites still apply.
+func (b *GRPCServer) WithTLSConfig(tlsConfig *tls.Config) *GRPCServer {
+	b.tlsConfig = tlsConfig
+	return b
+}
+
+// WithUnauthenticatedMethods lets calls to the given full method names, such
+// as "/pkg.Service/Method", through without authentication or authorization.
+// Their handlers must authenticate the caller themselves, for example from a
+// token in the request.
+func (b *GRPCServer) WithUnauthenticatedMethods(fullMethods ...string) *GRPCServer {
+	if b.unauthenticated == nil {
+		b.unauthenticated = map[string]bool{}
+	}
+	for _, m := range fullMethods {
+		b.unauthenticated[m] = true
+	}
+	return b
+}
+
+// WithSelfAuthorizedMethods authenticates calls to the given full method names
+// as usual but skips the authorizers. Their handlers must authorize the
+// authenticated caller themselves.
+func (b *GRPCServer) WithSelfAuthorizedMethods(fullMethods ...string) *GRPCServer {
+	if b.selfAuthorized == nil {
+		b.selfAuthorized = map[string]bool{}
+	}
+	for _, m := range fullMethods {
+		b.selfAuthorized[m] = true
+	}
+	return b
+}
+
 func (b *GRPCServer) Run(ctx context.Context) error {
 	if err := b.options.Validate(); err != nil {
 		return err
@@ -90,10 +129,73 @@ func (b *GRPCServer) Run(ctx context.Context) error {
 
 	// Set textlogger with verbosity level 4 for controller-runtime logging
 	log.SetLogger(textlogger.NewLogger(textlogger.NewConfig(textlogger.Verbosity(4))))
+
+	tlsConfig, err := b.buildTLSConfig(ctx)
+	if err != nil {
+		return err
+	}
+
+	grpcServerOptions = append(grpcServerOptions, grpc.Creds(credentials.NewTLS(tlsConfig)))
+
+	// append the stats handler for metrics
+	grpcServerOptions = append(grpcServerOptions, grpc.StatsHandler(metrics.NewGRPCMetricsHandler()))
+
+	// init prometheus middleware for grpc server
+	promMiddleware := grpcprom.NewServerMetrics(
+		// enable grpc handling time histogram to measure latency distributions of RPCs
+		grpcprom.WithServerHandlingTimeHistogram(
+			grpcprom.WithHistogramBuckets(k8smetrics.ExponentialBuckets(10e-7, 10, 10)),
+		),
+	)
+
+	grpcServerOptions = append(grpcServerOptions,
+		grpc.ChainUnaryInterceptor(
+			metrics.NewGRPCMetricsUnaryInterceptor(promMiddleware),
+			newAuthnUnaryInterceptor(b.unauthenticated, b.authenticators...),
+			newAuthzUnaryInterceptor(b.skipAuthz(), b.unaryAuthorizers...),
+		),
+		grpc.ChainStreamInterceptor(
+			metrics.NewGRPCMetricsStreamInterceptor(promMiddleware),
+			newAuthnStreamInterceptor(b.unauthenticated, b.authenticators...),
+			newAuthzStreamInterceptor(b.skipAuthz(), b.streamAuthorizers),
+		))
+
+	return b.serve(ctx, grpcServerOptions, promMiddleware)
+}
+
+// skipAuthz returns the methods the authorizers do not see.
+func (b *GRPCServer) skipAuthz() map[string]bool {
+	skip := map[string]bool{}
+	for m := range b.unauthenticated {
+		skip[m] = true
+	}
+	for m := range b.selfAuthorized {
+		skip[m] = true
+	}
+	return skip
+}
+
+// buildTLSConfig returns the TLS configuration set with WithTLSConfig, or one
+// that reloads the serving certificate and client CA from files.
+func (b *GRPCServer) buildTLSConfig(ctx context.Context) (*tls.Config, error) {
+	if b.tlsConfig != nil {
+		tlsConfig := b.tlsConfig.Clone()
+		if tlsConfig.MinVersion < b.options.tlsMinVersion {
+			tlsConfig.MinVersion = b.options.tlsMinVersion
+		}
+		if tlsConfig.MaxVersion == 0 || tlsConfig.MaxVersion > b.options.tlsMaxVersion {
+			tlsConfig.MaxVersion = b.options.tlsMaxVersion
+		}
+		if len(b.options.cipherSuiteIDs) > 0 && tlsConfig.MinVersion < tls.VersionTLS13 {
+			tlsConfig.CipherSuites = b.options.cipherSuiteIDs
+		}
+		return tlsConfig, nil
+	}
+
 	// Serve with TLS - use certwatcher for dynamic certificate reloading
 	certWatcher, err := certwatcher.New(b.options.TLSCertFile, b.options.TLSKeyFile)
 	if err != nil {
-		return fmt.Errorf("failed to create certificate watcher: %v", err)
+		return nil, fmt.Errorf("failed to create certificate watcher: %v", err)
 	}
 
 	// Configure watch interval from options (default is 1 minute, configurable via --grpc-cert-watch-interval flag or YAML config)
@@ -123,40 +225,18 @@ func (b *GRPCServer) Run(ctx context.Context) error {
 		certPool := x509.NewCertPool()
 		caPEM, err := os.ReadFile(b.options.ClientCAFile)
 		if err != nil {
-			return fmt.Errorf("failed to read server client CA file: %v", err)
+			return nil, fmt.Errorf("failed to read server client CA file: %v", err)
 		}
 		if ok := certPool.AppendCertsFromPEM(caPEM); !ok {
-			return fmt.Errorf("failed to append server client CA to cert pool")
+			return nil, fmt.Errorf("failed to append server client CA to cert pool")
 		}
 		tlsConfig.ClientCAs = certPool
 		tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
 	}
+	return tlsConfig, nil
+}
 
-	grpcServerOptions = append(grpcServerOptions, grpc.Creds(credentials.NewTLS(tlsConfig)))
-
-	// append the stats handler for metrics
-	grpcServerOptions = append(grpcServerOptions, grpc.StatsHandler(metrics.NewGRPCMetricsHandler()))
-
-	// init prometheus middleware for grpc server
-	promMiddleware := grpcprom.NewServerMetrics(
-		// enable grpc handling time histogram to measure latency distributions of RPCs
-		grpcprom.WithServerHandlingTimeHistogram(
-			grpcprom.WithHistogramBuckets(k8smetrics.ExponentialBuckets(10e-7, 10, 10)),
-		),
-	)
-
-	grpcServerOptions = append(grpcServerOptions,
-		grpc.ChainUnaryInterceptor(
-			metrics.NewGRPCMetricsUnaryInterceptor(promMiddleware),
-			newAuthnUnaryInterceptor(b.authenticators...),
-			newAuthzUnaryInterceptor(b.unaryAuthorizers...),
-		),
-		grpc.ChainStreamInterceptor(
-			metrics.NewGRPCMetricsStreamInterceptor(promMiddleware),
-			newAuthnStreamInterceptor(b.authenticators...),
-			newAuthzStreamInterceptor(b.streamAuthorizers),
-		))
-
+func (b *GRPCServer) serve(ctx context.Context, grpcServerOptions []grpc.ServerOption, promMiddleware *grpcprom.ServerMetrics) error {
 	grpcServer := grpc.NewServer(grpcServerOptions...)
 	// register all the general grpc server metrics
 	metrics.RegisterGRPCMetrics(promMiddleware, b.extraMetrics...)
@@ -196,13 +276,16 @@ func (b *GRPCServer) Run(ctx context.Context) error {
 	}
 }
 
-func newAuthnUnaryInterceptor(authenticators ...authn.Authenticator) grpc.UnaryServerInterceptor {
+func newAuthnUnaryInterceptor(unauthenticated map[string]bool, authenticators ...authn.Authenticator) grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
 		req interface{},
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (interface{}, error) {
+		if unauthenticated[info.FullMethod] {
+			return handler(ctx, req)
+		}
 		var err error
 		for _, authenticator := range authenticators {
 			ctx, err = authenticator.Authenticate(ctx)
@@ -219,13 +302,16 @@ func newAuthnUnaryInterceptor(authenticators ...authn.Authenticator) grpc.UnaryS
 	}
 }
 
-func newAuthzUnaryInterceptor(authorizers ...authz.UnaryAuthorizer) grpc.UnaryServerInterceptor {
+func newAuthzUnaryInterceptor(skip map[string]bool, authorizers ...authz.UnaryAuthorizer) grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
 		req interface{},
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (interface{}, error) {
+		if skip[info.FullMethod] {
+			return handler(ctx, req)
+		}
 		var errs []error
 		for _, authorizer := range authorizers {
 			decision, authorizedCtx, err := authorizer.AuthorizeRequest(ctx, req)
@@ -276,13 +362,16 @@ func newWrappedAuthStream(ctx context.Context, s grpc.ServerStream) grpc.ServerS
 // token or the client certificate depending on the provided authNType.
 // The interceptor then adds the retrieved identity information (user and groups) to the
 // context and invokes the provided handler.
-func newAuthnStreamInterceptor(authenticators ...authn.Authenticator) grpc.StreamServerInterceptor {
+func newAuthnStreamInterceptor(unauthenticated map[string]bool, authenticators ...authn.Authenticator) grpc.StreamServerInterceptor {
 	return func(
 		srv interface{},
 		ss grpc.ServerStream,
 		info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
 	) error {
+		if unauthenticated[info.FullMethod] {
+			return handler(srv, ss)
+		}
 		var err error
 		ctx := ss.Context()
 		for _, authenticator := range authenticators {
@@ -301,13 +390,16 @@ func newAuthnStreamInterceptor(authenticators ...authn.Authenticator) grpc.Strea
 }
 
 // newAuthzStreamInterceptor is a stream interceptor that authorizes the stream request.
-func newAuthzStreamInterceptor(authorizers []authz.StreamAuthorizer) grpc.StreamServerInterceptor {
+func newAuthzStreamInterceptor(skip map[string]bool, authorizers []authz.StreamAuthorizer) grpc.StreamServerInterceptor {
 	return func(
 		srv interface{},
 		ss grpc.ServerStream,
 		info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
 	) error {
+		if skip[info.FullMethod] {
+			return handler(srv, ss)
+		}
 		var errs []error
 
 		for _, authorizer := range authorizers {

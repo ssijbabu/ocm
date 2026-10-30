@@ -374,6 +374,25 @@ spec:
                     - Placements
                     type: string
                 type: object
+              spiffeRegistration:
+                description: |-
+                  spiffeRegistration declares the ServiceAccount the add-on agent runs as on
+                  managed clusters when the hub uses SPIFFE identities. The hub issues an
+                  add-on SVID only to a token for exactly this ServiceAccount. Managed
+                  clusters cannot change it.
+                properties:
+                  namespace:
+                    description: namespace the add-on agent is installed in on managed clusters.
+                    maxLength: 63
+                    type: string
+                  serviceAccountName:
+                    description: serviceAccountName the add-on agent runs as.
+                    maxLength: 253
+                    type: string
+                required:
+                - namespace
+                - serviceAccountName
+                type: object
               supportedConfigs:
                 description: |-
                   Deprecated: Will be removed and replaced with DefaultConfigs in v1beta1.

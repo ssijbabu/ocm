@@ -60,6 +60,13 @@ type ClusterManagementAddOnSpec struct {
 	// +optional
 	// +kubebuilder:default={type: Manual}
 	InstallStrategy InstallStrategy `json:"installStrategy,omitempty"`
+
+	// spiffeRegistration declares the ServiceAccount the add-on agent runs as on
+	// managed clusters when the hub uses SPIFFE identities. The hub issues an
+	// add-on SVID only to a token for exactly this ServiceAccount. Managed
+	// clusters cannot change it.
+	// +optional
+	SPIFFERegistration *SPIFFEAddOnRegistration `json:"spiffeRegistration,omitempty"`
 }
 
 // AddOnMeta represents a collection of metadata information for the add-on.
@@ -275,3 +282,17 @@ const (
 	// addons with this annotation.
 	AddonLifecycleSelfManageAnnotationValue = "self"
 )
+
+// SPIFFEAddOnRegistration is the ServiceAccount an add-on agent runs as on
+// managed clusters.
+type SPIFFEAddOnRegistration struct {
+	// namespace the add-on agent is installed in on managed clusters.
+	// +required
+	// +kubebuilder:validation:MaxLength=63
+	Namespace string `json:"namespace"`
+
+	// serviceAccountName the add-on agent runs as.
+	// +required
+	// +kubebuilder:validation:MaxLength=253
+	ServiceAccountName string `json:"serviceAccountName"`
+}

@@ -254,6 +254,14 @@ func (n *clusterManagerController) sync(ctx context.Context, controllerContext f
 	// Get gRPC endpoint type
 	if config.GRPCAuthEnabled {
 		config.GRPCEndpointType = helpers.GRPCServerEndpointType(clusterManager)
+		if spiffeSpec := helpers.GRPCSPIFFEConfig(clusterManager); spiffeSpec != nil {
+			if config.HostedMode {
+				return fmt.Errorf("SPIFFE identities are not supported in Hosted mode")
+			}
+			if err := setSPIFFEConfig(&config, spiffeSpec); err != nil {
+				return err
+			}
+		}
 	}
 
 	// Set TLS config for all managed hub component deployments

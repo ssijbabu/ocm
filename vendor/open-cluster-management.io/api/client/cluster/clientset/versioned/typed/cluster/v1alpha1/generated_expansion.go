@@ -6,3 +6,5 @@ package v1alpha1
 type AddOnPlacementScoreExpansion interface{}
 
 type ClusterClaimExpansion interface{}
+
+type ManagedClusterIdentityExpansion interface{}

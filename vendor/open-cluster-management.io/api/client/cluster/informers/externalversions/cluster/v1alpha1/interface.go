@@ -13,6 +13,8 @@ type Interface interface {
 	AddOnPlacementScores() AddOnPlacementScoreInformer
 	// ClusterClaims returns a ClusterClaimInformer.
 	ClusterClaims() ClusterClaimInformer
+	// ManagedClusterIdentities returns a ManagedClusterIdentityInformer.
+	ManagedClusterIdentities() ManagedClusterIdentityInformer
 }
 
 type version struct {
@@ -34,4 +36,9 @@ func (v *version) AddOnPlacementScores() AddOnPlacementScoreInformer {
 // ClusterClaims returns a ClusterClaimInformer.
 func (v *version) ClusterClaims() ClusterClaimInformer {
 	return &clusterClaimInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// ManagedClusterIdentities returns a ManagedClusterIdentityInformer.
+func (v *version) ManagedClusterIdentities() ManagedClusterIdentityInformer {
+	return &managedClusterIdentityInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }

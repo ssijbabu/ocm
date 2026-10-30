@@ -148,6 +148,8 @@ type AwsIrsa struct {
 type RegistrationDriver struct {
 	AuthType string
 	AwsIrsa  *AwsIrsa
+	// SPIFFE is set when the agents use SPIFFE identities with the grpc driver.
+	SPIFFE *operatorapiv1.SPIFFEAgentConfig
 }
 
 type ManagedClusterIamRole struct {
@@ -434,8 +436,18 @@ func (n *klusterletController) sync(ctx context.Context, controllerContext facto
 			hubClusterAccountId, hubClusterName := commonhelpers.GetAwsAccountIdAndClusterName(managedClusterIamRole.AwsIrsa.HubClusterArn)
 			config.ManagedClusterRoleSuffix = commonhelpers.Md5HashSuffix(hubClusterAccountId, hubClusterName, managedClusterAccountId, managedClusterName)
 		} else {
+			driver := klusterlet.Spec.RegistrationConfiguration.RegistrationDriver
 			config.RegistrationDriver = RegistrationDriver{
-				AuthType: klusterlet.Spec.RegistrationConfiguration.RegistrationDriver.AuthType,
+				AuthType: driver.AuthType,
+			}
+			if driver.AuthType == operatorapiv1.GRPCAuthType && driver.SPIFFE != nil {
+				// The agents read the hub trust bundle from a ClusterTrustBundle
+				// mounted where they run and write it to the managed cluster, so
+				// both must be the same cluster.
+				if helpers.IsHosted(klusterlet.Spec.DeployOption.Mode) {
+					return fmt.Errorf("SPIFFE identities are not supported in %s mode", klusterlet.Spec.DeployOption.Mode)
+				}
+				config.RegistrationDriver.SPIFFE = driver.SPIFFE
 			}
 		}
 

@@ -25,8 +25,17 @@ func NewAgentConfig(
 	workOption *work.WorkloadAgentOptions,
 	cancel context.CancelFunc,
 ) *AgentConfig {
+	registrationConfig := registration.NewSpokeAgentConfig(agentOption, registrationOption, cancel)
+	if registrationOption != nil && workOption != nil && registrationOption.RegisterDriverOption != nil &&
+		registrationOption.RegisterDriverOption.SPIFFEEnabled() {
+		// Both agents run as the klusterlet agent ServiceAccount here, so the
+		// work agent presents the registration agent's SVID.
+		workOption.SPIFFE = registrationOption.RegisterDriverOption.SPIFFEOption
+		workOption.SPIFFEClientCertificate = registrationConfig.SPIFFEClientCertificate
+		workOption.WorkloadSourceDriver = "grpc"
+	}
 	return &AgentConfig{
-		registrationConfig: registration.NewSpokeAgentConfig(agentOption, registrationOption, cancel),
+		registrationConfig: registrationConfig,
 		workConfig:         work.NewWorkAgentConfig(agentOption, workOption),
 	}
 }

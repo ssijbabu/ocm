@@ -100,6 +100,40 @@ type KlusterletSpec struct {
 	// is not available on the managed cluster.
 	// +optional
 	PriorityClassName string `json:"priorityClassName,omitempty"`
+
+	// AgentConfiguration contains the configuration of the klusterlet agents,
+	// such as the bind ports of their health probe and metrics endpoints.
+	// +optional
+	AgentConfiguration *AgentConfiguration `json:"agentConfiguration,omitempty"`
+}
+
+// AgentConfiguration represents customization of the klusterlet agents.
+type AgentConfiguration struct {
+	// BindConfiguration represents the server bind configuration of the klusterlet agents.
+	// +optional
+	BindConfiguration *AgentBindConfiguration `json:"bindConfiguration,omitempty"`
+}
+
+// AgentBindConfiguration represents customization of the server bindings of the klusterlet agents.
+type AgentBindConfiguration struct {
+	// HealthProbePort represents the bind port of the agents' health check endpoint. The default value is 8443.
+	// Agents run as non-root, so privileged ports below 1024 are not allowed.
+	// +optional
+	// +kubebuilder:default=8443
+	// +kubebuilder:validation:Minimum=1024
+	// +kubebuilder:validation:Maximum=65535
+	HealthProbePort int32 `json:"healthProbePort,omitempty"`
+
+	// MetricsPort represents the bind port of the agents' metrics endpoint. The default value is 8080.
+	// Metrics may be disabled by setting a value less than or equal to 0.
+	// +optional
+	// +kubebuilder:default=8080
+	// +kubebuilder:validation:Maximum=65535
+	MetricsPort int32 `json:"metricsPort"`
+
+	// HostNetwork enables running the agent pods in host networking mode.
+	// +optional
+	HostNetwork bool `json:"hostNetwork,omitempty"`
 }
 
 // ServerURL represents the apiserver url and ca bundle that is accessible externally
@@ -218,6 +252,32 @@ type RegistrationDriver struct {
 	// Contain the details required for registering with hub cluster (ie: an EKS cluster) using AWS IAM roles for service account.
 	// This is required only when the authType is awsirsa.
 	AwsIrsa *AwsIrsa `json:"awsIrsa,omitempty"`
+
+	// spiffe makes the agents obtain SPIFFE identities from the hub with their
+	// own projected ServiceAccount tokens. It requires authType grpc. No
+	// bootstrap or hub kubeconfig Secret is used.
+	// +optional
+	SPIFFE *SPIFFEAgentConfig `json:"spiffe,omitempty"`
+}
+
+// SPIFFEAgentConfig configures SPIFFE identities for the klusterlet agents.
+type SPIFFEAgentConfig struct {
+	// grpcServerAddress is the hub gRPC server's host:port.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	GRPCServerAddress string `json:"grpcServerAddress"`
+
+	// trustDomain is the hub's SPIFFE trust domain. The agents accept only a
+	// hub presenting spiffe://{trustDomain}/ocm/hub/grpc-server.
+	// +required
+	// +kubebuilder:validation:Pattern=`^[a-z0-9._-]+$`
+	TrustDomain string `json:"trustDomain"`
+
+	// tokenAudience is the hub's token audience, requested on the agents'
+	// projected tokens.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	TokenAudience string `json:"tokenAudience"`
 }
 
 type AwsIrsa struct {
@@ -236,6 +296,13 @@ type AwsIrsa struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:Pattern=`^arn:aws(?:-[a-z0-9]+)*:eks:([a-zA-Z0-9-]+):(\d{12}):cluster/([a-zA-Z0-9-]+)$`
 	ManagedClusterArn string `json:"managedClusterArn"`
+
+	// credentialSource selects how AWS credentials are obtained. IRSA annotates the service
+	// accounts with eks.amazonaws.com/role-arn; PodIdentity leaves them unannotated so an
+	// EKS Pod Identity association is used instead.
+	// +optional
+	// +kubebuilder:default:=IRSA
+	CredentialSource AwsCredentialSource `json:"credentialSource,omitempty"`
 }
 
 type AddOnRegistrationDriver struct {

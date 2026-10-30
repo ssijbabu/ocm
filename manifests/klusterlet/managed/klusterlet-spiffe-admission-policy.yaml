@@ -1,0 +1,63 @@
+# Whoever can act as an agent ServiceAccount can get its agent SVID, so in
+# SPIFFE mode this policy guards them on the spoke:
+#   - only the klusterlet operator may run Deployments and ReplicaSets as the
+#     agent ServiceAccounts, and only the ReplicaSet controller creates their pods;
+#   - only kubelets may request tokens for them, for projected volumes;
+#   - only spoke cluster admins (system:masters) may exec into, attach to,
+#     port-forward to or debug the agent pods.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: ocm-{{ .KlusterletName }}-agent-identity
+  labels:
+    {{ if gt (len .Labels) 0 }}
+    {{ range $key, $value := .Labels }}
+    "{{ $key }}": "{{ $value }}"
+    {{ end }}
+    {{ end }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .KlusterletNamespace }}
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["CREATE"]
+      resources: ["pods", "serviceaccounts/token"]
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["CONNECT", "CREATE", "UPDATE"]
+      resources: ["pods/exec", "pods/attach", "pods/portforward", "pods/ephemeralcontainers"]
+    - apiGroups: ["apps"]
+      apiVersions: ["v1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["deployments", "replicasets"]
+  variables:
+  - name: agentServiceAccounts
+    expression: "['{{ .RegistrationServiceAccount }}', '{{ .WorkServiceAccount }}']"
+  validations:
+  - expression: >-
+      request.resource.resource != 'pods' || request.subResource != '' ||
+      !(object.spec.serviceAccountName in variables.agentServiceAccounts) ||
+      request.userInfo.username == 'system:serviceaccount:kube-system:replicaset-controller'
+    message: only the ReplicaSet controller may create pods that run as an agent ServiceAccount
+  - expression: >-
+      !(request.resource.resource in ['deployments', 'replicasets']) ||
+      !(object.spec.template.spec.serviceAccountName in variables.agentServiceAccounts) ||
+      request.userInfo.username in [
+        'system:serviceaccount:{{ .OperatorNamespace }}:klusterlet',
+        'system:serviceaccount:kube-system:deployment-controller']
+    message: only the klusterlet operator may run workloads as an agent ServiceAccount
+  - expression: >-
+      request.resource.resource != 'serviceaccounts' || request.subResource != 'token' ||
+      !(request.name in variables.agentServiceAccounts) ||
+      'system:nodes' in request.userInfo.groups
+    message: agent ServiceAccount tokens may only be requested by kubelets for projected volumes
+  - expression: >-
+      request.resource.resource != 'pods' ||
+      !(request.subResource in ['exec', 'attach', 'portforward', 'ephemeralcontainers']) ||
+      !request.name.startsWith('{{ .KlusterletName }}-') ||
+      'system:masters' in request.userInfo.groups
+    message: only cluster admins may open a shell in, attach to or debug the klusterlet agents

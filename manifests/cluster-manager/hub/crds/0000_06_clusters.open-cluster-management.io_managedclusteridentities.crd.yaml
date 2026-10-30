@@ -1,0 +1,136 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: managedclusteridentities.cluster.open-cluster-management.io
+spec:
+  group: cluster.open-cluster-management.io
+  names:
+    kind: ManagedClusterIdentity
+    listKind: ManagedClusterIdentityList
+    plural: managedclusteridentities
+    shortNames:
+    - mcid
+    singular: managedclusteridentity
+  preserveUnknownFields: false
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.issuer
+      name: Issuer
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ManagedClusterIdentity records which projected ServiceAccount tokens may act
+          for a managed cluster when the hub uses SPIFFE identities. It has the same
+          name as the ManagedCluster. Only hub admins may write it: agents have no
+          access to it, so a compromised agent cannot change which tokens are trusted
+          for its cluster.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec is the binding the hub admin approved when accepting
+              the cluster.
+            properties:
+              issuer:
+                description: issuer is the managed cluster's ServiceAccount token
+                  issuer URL.
+                maxLength: 1024
+                pattern: ^https://[^?#]+$
+                type: string
+              jwks:
+                description: |-
+                  jwks pins the issuer's public signing keys as a JSON Web Key Set. When
+                  set, the hub never contacts the issuer. When empty, the hub discovers the
+                  keys from the issuer over https.
+                maxLength: 65536
+                type: string
+              serviceAccounts:
+                description: |-
+                  serviceAccounts are the agent ServiceAccounts on the managed cluster that
+                  may obtain agent SVIDs, identified by UID so a recreated ServiceAccount
+                  does not inherit the binding.
+                items:
+                  description: BoundServiceAccount is an agent ServiceAccount on the
+                    managed cluster.
+                  properties:
+                    agent:
+                      description: |-
+                        agent names the agent, such as registration or work. It becomes part of
+                        the agent's hub user name, system:open-cluster-management:{cluster}:{agent}.
+                      maxLength: 63
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    name:
+                      description: name of the ServiceAccount.
+                      maxLength: 253
+                      type: string
+                    namespace:
+                      description: namespace of the ServiceAccount.
+                      maxLength: 63
+                      type: string
+                    uid:
+                      description: uid of the ServiceAccount, as recorded at join.
+                      maxLength: 64
+                      type: string
+                  required:
+                  - agent
+                  - name
+                  - namespace
+                  - uid
+                  type: object
+                maxItems: 16
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - namespace
+                - name
+                x-kubernetes-list-type: map
+            required:
+            - issuer
+            - serviceAccounts
+            type: object
+          status:
+            description: status holds changes reported by the cluster that wait for
+              approval.
+            properties:
+              pendingJWKS:
+                description: |-
+                  pendingJWKS are new issuer signing keys the registration agent reported
+                  after the managed cluster rotated them. A hub admin approves them by
+                  copying them into spec.jwks after comparing thumbprints with the managed
+                  cluster admin.
+                maxLength: 65536
+                type: string
+              pendingSince:
+                description: pendingSince is when pendingJWKS was reported.
+                format: date-time
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -1,0 +1,61 @@
+# Whoever can act as grpc-server-sa can have the KMS sign with the hub CA key,
+# so in SPIFFE mode this policy is the key protection on the hub:
+#   - only the operator may create or change Deployments and ReplicaSets that
+#     run as grpc-server-sa, and only the ReplicaSet controller may create
+#     their pods;
+#   - only kubelets may request tokens for grpc-server-sa, for projected volumes;
+#   - only hub cluster admins (system:masters) may exec into, attach to,
+#     port-forward to or add debug containers to the gRPC server pods.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: ocm-{{ .ClusterManagerName }}-grpc-server-identity
+{{ if gt (len .Labels) 0 }}
+  labels:
+  {{ range $key, $value := .Labels }}
+    "{{ $key }}": "{{ $value }}"
+  {{ end }}
+{{ end }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .ClusterManagerNamespace }}
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["CREATE"]
+      resources: ["pods", "serviceaccounts/token"]
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["CONNECT", "CREATE", "UPDATE"]
+      resources: ["pods/exec", "pods/attach", "pods/portforward", "pods/ephemeralcontainers"]
+    - apiGroups: ["apps"]
+      apiVersions: ["v1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["deployments", "replicasets"]
+  validations:
+  - expression: >-
+      request.resource.resource != 'pods' || request.subResource != '' ||
+      object.spec.serviceAccountName != 'grpc-server-sa' ||
+      request.userInfo.username == 'system:serviceaccount:kube-system:replicaset-controller'
+    message: only the ReplicaSet controller may create pods that run as grpc-server-sa
+  - expression: >-
+      !(request.resource.resource in ['deployments', 'replicasets']) ||
+      object.spec.template.spec.serviceAccountName != 'grpc-server-sa' ||
+      request.userInfo.username in [
+        'system:serviceaccount:{{ .OperatorNamespace }}:cluster-manager',
+        'system:serviceaccount:kube-system:deployment-controller']
+    message: only the cluster-manager operator may run workloads as grpc-server-sa
+  - expression: >-
+      request.resource.resource != 'serviceaccounts' || request.subResource != 'token' ||
+      request.name != 'grpc-server-sa' ||
+      'system:nodes' in request.userInfo.groups
+    message: tokens for grpc-server-sa may only be requested by kubelets for projected volumes
+  - expression: >-
+      request.resource.resource != 'pods' ||
+      !(request.subResource in ['exec', 'attach', 'portforward', 'ephemeralcontainers']) ||
+      !request.name.startsWith('{{ .ClusterManagerName }}-grpc-server-') ||
+      'system:masters' in request.userInfo.groups
+    message: only hub cluster admins may open a shell in, attach to or debug the gRPC server

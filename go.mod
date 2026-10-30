@@ -28,6 +28,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/valyala/fasttemplate v1.2.2
 	go.uber.org/zap v1.28.0
+	golang.org/x/time v0.16.0
 	google.golang.org/grpc v1.84.0
 	gopkg.in/yaml.v2 v2.4.0
 	helm.sh/helm/v3 v3.21.4
@@ -175,7 +176,6 @@ require (
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
-	golang.org/x/time v0.16.0 // indirect
 	golang.org/x/tools v0.50.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
 	google.golang.org/api v0.298.0 // indirect
@@ -194,3 +194,8 @@ require (
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
+
+// Until the SPIFFE changes are released: api and sdk-go from the ssijbabu forks.
+replace open-cluster-management.io/api => github.com/ssijbabu/api v1.3.1-0.20261030064644-a2334d45be93
+
+replace open-cluster-management.io/sdk-go => github.com/ssijbabu/sdk-go v1.4.1-0.20261030064657-87a7e41cfced

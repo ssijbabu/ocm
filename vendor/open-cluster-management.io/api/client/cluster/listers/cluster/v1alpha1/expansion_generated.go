@@ -14,3 +14,7 @@ type AddOnPlacementScoreNamespaceListerExpansion interface{}
 // ClusterClaimListerExpansion allows custom methods to be added to
 // ClusterClaimLister.
 type ClusterClaimListerExpansion interface{}
+
+// ManagedClusterIdentityListerExpansion allows custom methods to be added to
+// ManagedClusterIdentityLister.
+type ManagedClusterIdentityListerExpansion interface{}

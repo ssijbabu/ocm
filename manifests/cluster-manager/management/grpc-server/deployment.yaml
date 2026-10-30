@@ -25,6 +25,11 @@ spec:
         "{{ $key }}": "{{ $value }}"
         {{ end }}
         {{ end }}
+        {{ if .GRPCSPIFFEEnabled }}
+        {{ range $key, $value := .GRPCSPIFFEPodLabels }}
+        "{{ $key }}": "{{ $value }}"
+        {{ end }}
+        {{ end }}
     spec:
       affinity:
         podAntiAffinity:
@@ -61,6 +66,9 @@ spec:
           - "/server"
           - "grpc"
           - "--server-config=/var/run/secrets/hub/grpc/config/config.yaml"
+        {{ if .GRPCSPIFFEEnabled }}
+          - "--spiffe-config=/var/run/secrets/hub/grpc/spiffe/config.yaml"
+        {{ end }}
         {{ if .HostedMode }}
           - "--kubeconfig=/var/run/secrets/hub/kubeconfig"
         {{ end }}
@@ -119,12 +127,25 @@ spec:
         - name: grpc-server-config
           mountPath: "/var/run/secrets/hub/grpc/config"
           readOnly: true
+        {{ if .GRPCSPIFFEEnabled }}
+        # SPIFFE mode: no CA or serving certificate Secret. The hub server SVID
+        # is signed through the KMS and kept in memory.
+        - name: grpc-server-spiffe-config
+          mountPath: "/var/run/secrets/hub/grpc/spiffe"
+          readOnly: true
+        {{ if .GRPCSPIFFEOpenBaoTokenAudience }}
+        - name: openbao-token
+          mountPath: "/var/run/secrets/openbao"
+          readOnly: true
+        {{ end }}
+        {{ else }}
         - name: grpc-server-ca
           mountPath: "/var/run/secrets/hub/grpc/ca"
           readOnly: true
         - name: grpc-server-serving-cert
           mountPath: "/var/run/secrets/hub/grpc/serving-cert"
           readOnly: true
+        {{ end }}
       {{ if .HostedMode }}
         - mountPath: /var/run/secrets/hub
           name: kubeconfig
@@ -137,12 +158,27 @@ spec:
         configMap:
             name: grpc-server-config
             optional: true
+      {{ if .GRPCSPIFFEEnabled }}
+      - name: grpc-server-spiffe-config
+        configMap:
+            name: grpc-server-spiffe-config
+      {{ if .GRPCSPIFFEOpenBaoTokenAudience }}
+      - name: openbao-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: "{{ .GRPCSPIFFEOpenBaoTokenAudience }}"
+              expirationSeconds: 3600
+              path: token
+      {{ end }}
+      {{ else }}
       - name: grpc-server-ca
         configMap:
             name: ca-bundle-configmap
       - name: grpc-server-serving-cert
         secret:
           secretName: grpc-server-serving-cert
+      {{ end }}
       {{ if .HostedMode }}
       - name: kubeconfig
         secret:

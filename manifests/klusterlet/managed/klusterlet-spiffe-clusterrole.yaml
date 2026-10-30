@@ -1,0 +1,24 @@
+# SPIFFE mode: the registration agent stores the hub trust bundle in the
+# spoke's signer-linked ClusterTrustBundle. The kube-apiserver accepts the
+# write only from callers allowed to attest for the OCM SPIFFE signer.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-cluster-management:{{ .KlusterletName }}-spiffe:agent
+  labels:
+    {{ if gt (len .Labels) 0 }}
+    {{ range $key, $value := .Labels }}
+    "{{ $key }}": "{{ $value }}"
+    {{ end }}
+    {{ end }}
+rules:
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["clustertrustbundles"]
+  verbs: ["get", "list", "watch", "create", "update"]
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["signers"]
+  resourceNames: ["open-cluster-management.io/spiffe-hub"]
+  verbs: ["attest"]
+# Read the spoke issuer's keys to report rotations to the hub.
+- nonResourceURLs: ["/openid/v1/jwks", "/.well-known/openid-configuration"]
+  verbs: ["get"]

@@ -55,6 +55,13 @@ type ClusterManagementAddOnSpec struct {
 	// hosting-cluster-name to be set. Disabled by default.
 	// +optional
 	HostedModeAutoDiscovery *HostedModeAutoDiscoveryConfig `json:"hostedModeAutoDiscovery,omitempty"`
+
+	// spiffeRegistration declares the ServiceAccount the add-on agent runs as on
+	// managed clusters when the hub uses SPIFFE identities. The hub issues an
+	// add-on SVID only to a token for exactly this ServiceAccount. Managed
+	// clusters cannot change it.
+	// +optional
+	SPIFFERegistration *SPIFFEAddOnRegistration `json:"spiffeRegistration,omitempty"`
 }
 
 // HostedModeAutoDiscoveryConfig configures automatic hosting-cluster resolution for addon Hosted mode.
@@ -247,4 +254,18 @@ type ClusterManagementAddOnList struct {
 
 	// Items is a list of cluster management add-ons.
 	Items []ClusterManagementAddOn `json:"items"`
+}
+
+// SPIFFEAddOnRegistration is the ServiceAccount an add-on agent runs as on
+// managed clusters.
+type SPIFFEAddOnRegistration struct {
+	// namespace the add-on agent is installed in on managed clusters.
+	// +required
+	// +kubebuilder:validation:MaxLength=63
+	Namespace string `json:"namespace"`
+
+	// serviceAccountName the add-on agent runs as.
+	// +required
+	// +kubebuilder:validation:MaxLength=253
+	ServiceAccountName string `json:"serviceAccountName"`
 }

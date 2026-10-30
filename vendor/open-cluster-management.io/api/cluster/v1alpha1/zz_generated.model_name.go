@@ -27,6 +27,11 @@ func (in AddOnPlacementScoreStatus) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in BoundServiceAccount) OpenAPIModelName() string {
+	return "io.open-cluster-management.api.cluster.v1alpha1.BoundServiceAccount"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in ClusterClaim) OpenAPIModelName() string {
 	return "io.open-cluster-management.api.cluster.v1alpha1.ClusterClaim"
 }
@@ -39,6 +44,26 @@ func (in ClusterClaimList) OpenAPIModelName() string {
 // OpenAPIModelName returns the OpenAPI model name for this type.
 func (in ClusterClaimSpec) OpenAPIModelName() string {
 	return "io.open-cluster-management.api.cluster.v1alpha1.ClusterClaimSpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ManagedClusterIdentity) OpenAPIModelName() string {
+	return "io.open-cluster-management.api.cluster.v1alpha1.ManagedClusterIdentity"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ManagedClusterIdentityList) OpenAPIModelName() string {
+	return "io.open-cluster-management.api.cluster.v1alpha1.ManagedClusterIdentityList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ManagedClusterIdentitySpec) OpenAPIModelName() string {
+	return "io.open-cluster-management.api.cluster.v1alpha1.ManagedClusterIdentitySpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ManagedClusterIdentityStatus) OpenAPIModelName() string {
+	return "io.open-cluster-management.api.cluster.v1alpha1.ManagedClusterIdentityStatus"
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.

@@ -7,6 +7,7 @@ import (
 
 	"github.com/openshift/library-go/pkg/controller/controllercmd"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -230,8 +231,7 @@ func (o *WorkAgentConfig) newWorkClientAndInformer(
 
 		watcherStore = store.NewAgentInformerWatcherStore()
 
-		serverHost, config, err := builder.NewConfigLoader(o.workOptions.WorkloadSourceDriver, o.workOptions.WorkloadSourceConfig).
-			LoadConfig()
+		serverHost, config, err := o.loadCloudEventsConfig(ctx)
 		if err != nil {
 			return "", nil, nil, err
 		}
@@ -259,4 +259,35 @@ func (o *WorkAgentConfig) newWorkClientAndInformer(
 	informer := factory.Work().V1().ManifestWorks()
 
 	return hubHost, workClient.WorkV1().ManifestWorks(o.agentOptions.SpokeClusterName), informer, nil
+}
+
+// loadCloudEventsConfig returns the workload source config. In SPIFFE mode the
+// gRPC connection presents the work agent SVID, obtained with the work agent's
+// own projected token unless the singleton agent shares the registration
+// agent's.
+func (o *WorkAgentConfig) loadCloudEventsConfig(ctx context.Context) (string, any, error) {
+	if !o.workOptions.SPIFFE.Enabled() {
+		return builder.NewConfigLoader(o.workOptions.WorkloadSourceDriver, o.workOptions.WorkloadSourceConfig).LoadConfig()
+	}
+	clientCert := o.workOptions.SPIFFEClientCertificate
+	if clientCert == nil {
+		manager, _, err := o.workOptions.SPIFFE.StartManager(ctx, o.agentOptions.SpokeClusterName, nil)
+		if err != nil {
+			return "", nil, err
+		}
+		// TLS sends the client certificate only when a connection opens, so the
+		// workload connection must wait for the first SVID.
+		klog.FromContext(ctx).Info("Waiting for the work agent SVID")
+		if err := wait.PollUntilContextCancel(ctx, time.Second, true, func(context.Context) (bool, error) {
+			return manager.Current() != nil, nil
+		}); err != nil {
+			return "", nil, err
+		}
+		clientCert = manager.GetClientCertificate
+	}
+	config, err := o.workOptions.SPIFFE.GRPCOptions(clientCert)
+	if err != nil {
+		return "", nil, err
+	}
+	return o.workOptions.SPIFFE.GRPCServer, config, nil
 }

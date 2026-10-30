@@ -210,8 +210,8 @@ func (c certRotationController) syncOne(ctx context.Context, clustermanager *ope
 		}
 	}
 
-	// delete the grpc serving secret if the grpc auth is disabled
-	if !helpers.GRPCAuthEnabled(clustermanager) {
+	// delete the grpc serving secret if the grpc auth is disabled or uses SPIFFE identities
+	if !helpers.GRPCServingCertNeeded(clustermanager) {
 		if _, ok := c.rotationMap[clustermanager.Name]; ok {
 			delete(c.rotationMap[clustermanager.Name].targetRotations, helpers.GRPCServerSecret)
 		}
@@ -276,7 +276,7 @@ func (c certRotationController) syncOne(ctx context.Context, clustermanager *ope
 	// Ensure certificates are exists
 	cmRotations := c.rotationMap[clustermanagerName]
 
-	if helpers.GRPCAuthEnabled(clustermanager) {
+	if helpers.GRPCServingCertNeeded(clustermanager) {
 		// maintain the grpc serving certs
 		// TODO may support user provided certs
 		hostNames, grpcErr := helpers.GRPCServerHostNames(c.kubeClient, clustermanagerNamespace, clustermanager)
