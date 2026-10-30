@@ -1,6 +1,8 @@
 package clustermanagercontroller
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,6 +32,10 @@ func setSPIFFEConfig(config *manifests.HubConfig, spec *operatorapiv1.SPIFFEHubC
 	}
 	if spec.AgentSVIDLifetime != nil {
 		cfg.AgentSVIDLifetime = metav1.Duration{Duration: spec.AgentSVIDLifetime.Duration}
+		// Hub CA rotation waits one agent SVID lifetime per stage, so it must
+		// follow the lifetime: a shorter wait would sign with a new hub CA
+		// before every agent has learned it.
+		cfg.MaxAgentSVIDLifetime = cfg.AgentSVIDLifetime
 	}
 	switch spec.Signer.Type {
 	case operatorapiv1.SPIFFESignerTypeAzureKeyVault:
@@ -68,8 +74,10 @@ func setSPIFFEConfig(config *manifests.HubConfig, spec *operatorapiv1.SPIFFEHubC
 		return err
 	}
 
+	sum := sha256.Sum256(data)
 	config.GRPCSPIFFEEnabled = true
 	config.GRPCSPIFFEConfig = data
+	config.GRPCSPIFFEConfigHash = hex.EncodeToString(sum[:])
 	config.GRPCSPIFFEServiceAccountAnnotations = spec.ServiceAccountAnnotations
 	config.GRPCSPIFFEPodLabels = spec.PodLabels
 	return nil

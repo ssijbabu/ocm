@@ -134,7 +134,12 @@ func (s *Signer) Current(ctx context.Context) (*signer.CA, error) {
 	if err != nil {
 		return nil, err
 	}
+	return s.ForCertificate(ctx, cert)
+}
 
+// ForCertificate finds the transit key version whose public key is in cert.
+// OpenBao keeps earlier versions until they are trimmed.
+func (s *Signer) ForCertificate(ctx context.Context, cert *x509.Certificate) (*signer.CA, error) {
 	var key transitKeyResponse
 	if err := s.do(ctx, http.MethodGet, s.transitMount+"/keys/"+url.PathEscape(s.keyName), nil, &key); err != nil {
 		return nil, fmt.Errorf("failed to read transit key %q: %w", s.keyName, err)

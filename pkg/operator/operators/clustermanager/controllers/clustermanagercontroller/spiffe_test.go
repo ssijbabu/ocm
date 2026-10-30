@@ -4,16 +4,19 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clienttesting "k8s.io/client-go/testing"
 
 	operatorapiv1 "open-cluster-management.io/api/operator/v1"
 
+	"open-cluster-management.io/ocm/manifests"
 	testingcommon "open-cluster-management.io/ocm/pkg/common/testing"
 	"open-cluster-management.io/ocm/pkg/server/spiffe"
 )
@@ -125,6 +128,9 @@ func TestSyncDeployWithGRPCSPIFFE(t *testing.T) {
 	if pod.Labels["example.com/use-identity"] != "true" {
 		t.Error("provider pod labels not applied")
 	}
+	if len(pod.Annotations["open-cluster-management.io/spiffe-config-hash"]) != 64 {
+		t.Error("the pod template must carry the SPIFFE config hash, so a config change restarts the server")
+	}
 	if !strings.Contains(strings.Join(pod.Spec.Containers[0].Args, " "), "--spiffe-config=") {
 		t.Error("gRPC server not started in SPIFFE mode")
 	}
@@ -156,6 +162,19 @@ func TestSPIFFERejectedInHostedMode(t *testing.T) {
 	setup(t, tc, nil)
 	if err := tc.clusterManagerController.sync(ctx, testingcommon.NewFakeSyncContext(t, "testhub"), "testhub"); err == nil {
 		t.Fatal("expected SPIFFE in Hosted mode to be refused")
+	}
+}
+
+func TestSPIFFERotationFollowsAgentSVIDLifetime(t *testing.T) {
+	spec := spiffeClusterManager().Spec.RegistrationConfiguration.RegistrationDrivers[0].GRPC.SPIFFE
+	spec.AgentSVIDLifetime = &metav1.Duration{Duration: 2 * time.Hour}
+	config := &manifests.HubConfig{}
+	if err := setSPIFFEConfig(config, spec); err != nil {
+		t.Fatal(err)
+	}
+	cfg := writeAndLoad(t, string(config.GRPCSPIFFEConfig))
+	if cfg.MaxAgentSVIDLifetime.Duration != 2*time.Hour {
+		t.Errorf("hub CA rotation must wait one agent SVID lifetime per stage, got %v", cfg.MaxAgentSVIDLifetime.Duration)
 	}
 }
 

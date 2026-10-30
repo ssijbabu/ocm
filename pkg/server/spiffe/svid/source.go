@@ -3,8 +3,11 @@ package svid
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -15,9 +18,38 @@ import (
 	"open-cluster-management.io/ocm/pkg/server/spiffe/signer"
 )
 
-// TrustBundleFunc is called with the hub trust bundle whenever it changes,
-// active hub CA certificate first. Returning an error retries the sync.
-type TrustBundleFunc func(ctx context.Context, bundle []*x509.Certificate) error
+// RotationState is what a restarted hub gRPC server needs to resume a hub CA
+// rotation where it left off. Certificates are named by Fingerprint.
+type RotationState struct {
+	Active       string      `json:"active"`
+	Pending      string      `json:"pending,omitempty"`
+	PendingSince *time.Time  `json:"pendingSince,omitempty"`
+	Retired      []RetiredCA `json:"retired,omitempty"`
+}
+
+// RetiredCA is a retired hub CA certificate and when it leaves the bundle.
+type RetiredCA struct {
+	Certificate string    `json:"certificate"`
+	RetireAt    time.Time `json:"retireAt"`
+}
+
+// Fingerprint names a certificate in a RotationState: the hex SHA-256 of its DER.
+func Fingerprint(cert *x509.Certificate) string {
+	sum := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// RotationStateAnnotation holds the rotation state on the hub trust bundle.
+const RotationStateAnnotation = "open-cluster-management.io/spiffe-hub-ca-rotation"
+
+// TrustBundleStore publishes the hub trust bundle, active hub CA certificate
+// first, together with the rotation state, and reads both back after a
+// restart. Load returns no certificates and an empty state if nothing was
+// published yet.
+type TrustBundleStore interface {
+	Load(ctx context.Context) ([]*x509.Certificate, string, error)
+	Save(ctx context.Context, bundle []*x509.Certificate, state string) error
+}
 
 // Options configures a ServerSVIDSource.
 type Options struct {
@@ -38,9 +70,10 @@ type Options struct {
 	// RetryInterval is the wait after a failed sync, for example while the KMS
 	// is unavailable. Defaults to 10 seconds.
 	RetryInterval time.Duration
-	// OnTrustBundleChange publishes the hub trust bundle.
-	OnTrustBundleChange TrustBundleFunc
-	Clock               clock.WithTicker
+	// Store publishes the hub trust bundle and keeps the rotation state, so a
+	// restart does not cut a rotation short.
+	Store TrustBundleStore
+	Clock clock.WithTicker
 }
 
 type retiredCA struct {
@@ -63,8 +96,10 @@ type retiredCA struct {
 // spoke agents that have not renewed yet: they could not verify the hub, so
 // they could not renew. Nothing here is written to disk.
 //
-// The stages are kept in memory. If the server restarts while a new hub CA is
-// pending, the new hub CA becomes active immediately.
+// The stages are saved with the hub trust bundle. After a restart the source
+// resumes them, signing with the earlier hub CA key version through
+// signer.ForCertificate until the new hub CA has been published for
+// MaxAgentSVIDLifetime.
 type ServerSVIDSource struct {
 	signer signer.Signer
 	opts   Options
@@ -79,7 +114,9 @@ type ServerSVIDSource struct {
 	issuedBy []byte
 	renewAt  time.Time
 
-	published []*x509.Certificate
+	restored       bool
+	published      []*x509.Certificate
+	publishedState string
 }
 
 // NewServerSVIDSource validates opts and returns a source. Call Run to start it.
@@ -170,22 +207,32 @@ func (s *ServerSVIDSource) sync(ctx context.Context) (time.Duration, error) {
 	if err := ValidateCA(latest.Certificate, s.opts.TrustDomain, now); err != nil {
 		return 0, err
 	}
+	if !s.restored {
+		if err := s.restore(ctx, latest, now); err != nil {
+			return 0, err
+		}
+		s.restored = true
+	}
 
 	s.mu.Lock()
 	s.advanceRotationLocked(ctx, latest, now)
 	bundle := s.bundleLocked()
-	publish := !sameCerts(bundle, s.published)
+	state, err := s.stateLocked()
+	publish := !sameCerts(bundle, s.published) || state != s.publishedState
 	s.mu.Unlock()
+	if err != nil {
+		return 0, err
+	}
 
-	if publish && s.opts.OnTrustBundleChange != nil {
-		if err := s.opts.OnTrustBundleChange(ctx, bundle); err != nil {
+	if publish && s.opts.Store != nil {
+		if err := s.opts.Store.Save(ctx, bundle, state); err != nil {
 			return 0, fmt.Errorf("failed to publish the hub trust bundle: %w", err)
 		}
 		logger.Info("Published the hub trust bundle", "certificates", len(bundle))
 	}
 
 	s.mu.Lock()
-	s.published = bundle
+	s.published, s.publishedState = bundle, state
 	active := s.active
 	due := s.current == nil || !bytes.Equal(s.issuedBy, active.Certificate.Raw) || !now.Before(s.renewAt)
 	s.mu.Unlock()
@@ -254,6 +301,85 @@ func (s *ServerSVIDSource) advanceRotationLocked(ctx context.Context, latest *si
 		}
 	}
 	s.retired = kept
+}
+
+// restore resumes the rotation saved with the published hub trust bundle. If
+// the KMS now holds a newer hub CA than the saved active one, the saved one
+// keeps signing until the newer one has been published long enough; signing
+// with the newer one straight away would lock out every spoke agent that has
+// not learned it yet.
+func (s *ServerSVIDSource) restore(ctx context.Context, latest *signer.CA, now time.Time) error {
+	if s.opts.Store == nil {
+		return nil
+	}
+	logger := klog.FromContext(ctx)
+	published, raw, err := s.opts.Store.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to read the published hub trust bundle: %w", err)
+	}
+	if raw == "" {
+		return nil
+	}
+	state := &RotationState{}
+	if err := json.Unmarshal([]byte(raw), state); err != nil {
+		logger.Error(err, "Ignoring an unreadable hub CA rotation state")
+		return nil
+	}
+	byFingerprint := map[string]*x509.Certificate{}
+	for _, c := range published {
+		byFingerprint[Fingerprint(c)] = c
+	}
+	activeCert := byFingerprint[state.Active]
+	if activeCert == nil {
+		logger.Info("The saved active hub CA is not in the published hub trust bundle, starting afresh")
+		return nil
+	}
+
+	var retired []retiredCA
+	for _, r := range state.Retired {
+		if c := byFingerprint[r.Certificate]; c != nil && now.Before(r.RetireAt) {
+			retired = append(retired, retiredCA{cert: c, retireAt: r.RetireAt})
+		}
+	}
+
+	active := latest
+	if !bytes.Equal(activeCert.Raw, latest.Certificate.Raw) {
+		if active, err = s.signer.ForCertificate(ctx, activeCert); err != nil {
+			return fmt.Errorf("a hub CA rotation is in progress, but the hub CA %q that spoke agents trust cannot sign: %w; "+
+				"re-enable its key version in the KMS, or remove the annotation %s from the hub trust bundle "+
+				"to sign with the new hub CA at once, which locks out spoke agents that have not learned it",
+				activeCert.Subject.String(), err, RotationStateAnnotation)
+		}
+		if err := ValidateCA(active.Certificate, s.opts.TrustDomain, now); err != nil {
+			return err
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.active, s.retired = active, retired
+	if state.Pending == Fingerprint(latest.Certificate) && state.PendingSince != nil {
+		s.pending, s.pendingSince = latest, *state.PendingSince
+	}
+	logger.Info("Resumed the hub CA rotation state", "active", active.Certificate.Subject.String(),
+		"pending", s.pending != nil, "retired", len(s.retired))
+	return nil
+}
+
+func (s *ServerSVIDSource) stateLocked() (string, error) {
+	if s.active == nil {
+		return "", nil
+	}
+	state := RotationState{Active: Fingerprint(s.active.Certificate)}
+	if s.pending != nil {
+		since := s.pendingSince.UTC()
+		state.Pending, state.PendingSince = Fingerprint(s.pending.Certificate), &since
+	}
+	for _, r := range s.retired {
+		state.Retired = append(state.Retired, RetiredCA{Certificate: Fingerprint(r.cert), RetireAt: r.retireAt.UTC()})
+	}
+	data, err := json.Marshal(state)
+	return string(data), err
 }
 
 func (s *ServerSVIDSource) bundleLocked() []*x509.Certificate {

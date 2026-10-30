@@ -36,13 +36,14 @@ type fakeBao struct {
 	server     *httptest.Server
 	keys       map[int]*ecdsa.PrivateKey
 	cert       *x509.Certificate
+	oldCert    *x509.Certificate
 	exportable bool
 	signs      atomic.Int32
 }
 
 func newFakeBao(t *testing.T) *fakeBao {
 	t.Helper()
-	old, _, err := memory.NewSelfSignedCA(trustDomain, time.Now(), time.Hour)
+	old, oldCert, err := memory.NewSelfSignedCA(trustDomain, time.Now(), time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +51,7 @@ func newFakeBao(t *testing.T) *fakeBao {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fakeBao{keys: map[int]*ecdsa.PrivateKey{1: old.(*ecdsa.PrivateKey), 2: k.(*ecdsa.PrivateKey)}, cert: cert}
+	f := &fakeBao{keys: map[int]*ecdsa.PrivateKey{1: old.(*ecdsa.PrivateKey), 2: k.(*ecdsa.PrivateKey)}, cert: cert, oldCert: oldCert}
 	f.server = httptest.NewTLSServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.server.Close)
 	return f
@@ -136,6 +137,21 @@ func TestIssueServerSVIDThroughOpenBao(t *testing.T) {
 	roots.AddCert(f.cert)
 	if _, err := cert.Leaf.Verify(x509.VerifyOptions{Roots: roots, CurrentTime: now}); err != nil {
 		t.Fatalf("hub server SVID signed through OpenBao does not verify: %v", err)
+	}
+}
+
+func TestForCertificateSignsWithAnEarlierVersion(t *testing.T) {
+	f := newFakeBao(t)
+	ca, err := f.signer(t).ForCertificate(context.Background(), f.oldCert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := svid.IssueServerSVID(context.Background(), ca, trustDomain, nil, time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cert.Leaf.CheckSignatureFrom(f.oldCert); err != nil {
+		t.Fatalf("not signed with the earlier key version: %v", err)
 	}
 }
 

@@ -14,17 +14,24 @@ import (
 	"open-cluster-management.io/ocm/pkg/server/spiffe/signer/memory"
 )
 
+// recorder stands in for the hub ClusterTrustBundle.
 type recorder struct {
 	bundles [][]*x509.Certificate
+	state   string
 	err     error
 }
 
-func (r *recorder) publish(_ context.Context, b []*x509.Certificate) error {
+func (r *recorder) Save(_ context.Context, b []*x509.Certificate, state string) error {
 	if r.err != nil {
 		return r.err
 	}
 	r.bundles = append(r.bundles, b)
+	r.state = state
 	return nil
+}
+
+func (r *recorder) Load(context.Context) ([]*x509.Certificate, string, error) {
+	return r.last(), r.state, r.err
 }
 
 func (r *recorder) last() []*x509.Certificate {
@@ -40,6 +47,18 @@ func (failingSigner) Current(context.Context) (*signer.CA, error) {
 	return nil, errors.New("KMS unavailable")
 }
 
+func (failingSigner) ForCertificate(context.Context, *x509.Certificate) (*signer.CA, error) {
+	return nil, errors.New("KMS unavailable")
+}
+
+// forgetfulSigner cannot sign with earlier hub CA key versions, as when the
+// platform admin disabled the old version too early.
+type forgetfulSigner struct{ *memory.Signer }
+
+func (forgetfulSigner) ForCertificate(context.Context, *x509.Certificate) (*signer.CA, error) {
+	return nil, errors.New("key version disabled")
+}
+
 func newSource(t *testing.T, s signer.Signer, clk *clocktesting.FakeClock, rec *recorder) *ServerSVIDSource {
 	t.Helper()
 	src, err := NewServerSVIDSource(s, Options{
@@ -47,7 +66,7 @@ func newSource(t *testing.T, s signer.Signer, clk *clocktesting.FakeClock, rec *
 		TTL:                  time.Hour,
 		MaxAgentSVIDLifetime: time.Hour,
 		CACheckInterval:      time.Minute,
-		OnTrustBundleChange:  rec.publish,
+		Store:                rec,
 		Clock:                clk,
 	})
 	if err != nil {
@@ -171,6 +190,102 @@ func TestSourceRotatesHubCAInStages(t *testing.T) {
 	mustSync(t, src)
 	if got := rec.last(); len(got) != 1 || !bytes.Equal(got[0].Raw, newCert.Raw) {
 		t.Fatalf("want only the new hub CA published, got %d certificates", len(got))
+	}
+}
+
+// TestSourceResumesRotationAfterRestart restarts the server while a new hub
+// CA is pending and checks that the old hub CA keeps signing until the new one
+// has been published for a full agent SVID lifetime.
+func TestSourceResumesRotationAfterRestart(t *testing.T) {
+	start := time.Now()
+	clk := clocktesting.NewFakeClock(start)
+	oldKey, oldCert, _ := memory.NewSelfSignedCA(trustDomain, start, 24*time.Hour)
+	kms := memory.New(oldKey, oldCert)
+	rec := &recorder{}
+	mustSync(t, newSource(t, kms, clk, rec))
+
+	newKey, newCert, _ := memory.NewSelfSignedCA(trustDomain, start, 24*time.Hour)
+	kms.Rotate(newKey, newCert)
+	mustSync(t, newSource(t, kms, clk, rec))
+	clk.Step(30 * time.Minute)
+
+	restarted := newSource(t, kms, clk, rec)
+	mustSync(t, restarted)
+	if !bytes.Equal(restarted.ActiveCA().Certificate.Raw, oldCert.Raw) || !signedBy(issuer(t, restarted), oldCert) {
+		t.Fatal("a restart must not activate a pending hub CA")
+	}
+	if got := rec.last(); len(got) != 2 || !bytes.Equal(got[0].Raw, oldCert.Raw) || !bytes.Equal(got[1].Raw, newCert.Raw) {
+		t.Fatalf("want [old, new] published after the restart, got %d certificates", len(got))
+	}
+
+	// The pending time counts from the first publish, not from the restart.
+	clk.Step(30 * time.Minute)
+	mustSync(t, restarted)
+	if !bytes.Equal(restarted.ActiveCA().Certificate.Raw, newCert.Raw) || !signedBy(issuer(t, restarted), newCert) {
+		t.Fatal("new hub CA not active one agent SVID lifetime after it was first published")
+	}
+
+	// A restart while the old hub CA is retired keeps it published.
+	clk.Step(30 * time.Minute)
+	again := newSource(t, kms, clk, rec)
+	mustSync(t, again)
+	if got := rec.last(); len(got) != 2 || !bytes.Equal(got[1].Raw, oldCert.Raw) {
+		t.Fatal("a restart must keep a retired hub CA published until its SVIDs expire")
+	}
+	clk.Step(30 * time.Minute)
+	mustSync(t, again)
+	if got := rec.last(); len(got) != 1 || !bytes.Equal(got[0].Raw, newCert.Raw) {
+		t.Fatalf("want only the new hub CA published, got %d certificates", len(got))
+	}
+}
+
+// TestSourceRotatedWhileStopped covers a new hub CA created while the server
+// was down: it is pending from the first sync after the restart.
+func TestSourceRotatedWhileStopped(t *testing.T) {
+	start := time.Now()
+	clk := clocktesting.NewFakeClock(start)
+	oldKey, oldCert, _ := memory.NewSelfSignedCA(trustDomain, start, 24*time.Hour)
+	kms := memory.New(oldKey, oldCert)
+	rec := &recorder{}
+	mustSync(t, newSource(t, kms, clk, rec))
+
+	newKey, newCert, _ := memory.NewSelfSignedCA(trustDomain, start, 24*time.Hour)
+	kms.Rotate(newKey, newCert)
+	restarted := newSource(t, kms, clk, rec)
+	mustSync(t, restarted)
+	if !bytes.Equal(restarted.ActiveCA().Certificate.Raw, oldCert.Raw) {
+		t.Fatal("a hub CA created while the server was down must start as pending")
+	}
+	if got := rec.last(); len(got) != 2 {
+		t.Fatalf("want [old, new] published, got %d certificates", len(got))
+	}
+}
+
+// TestSourceRefusesToSkipPendingWithoutOldKey checks that a restarted server
+// does not sign with a pending hub CA when the old key version is gone.
+func TestSourceRefusesToSkipPendingWithoutOldKey(t *testing.T) {
+	start := time.Now()
+	clk := clocktesting.NewFakeClock(start)
+	oldKey, oldCert, _ := memory.NewSelfSignedCA(trustDomain, start, 24*time.Hour)
+	kms := memory.New(oldKey, oldCert)
+	rec := &recorder{}
+	mustSync(t, newSource(t, kms, clk, rec))
+
+	newKey, newCert, _ := memory.NewSelfSignedCA(trustDomain, start, 24*time.Hour)
+	kms.Rotate(newKey, newCert)
+	restarted := newSource(t, forgetfulSigner{kms}, clk, rec)
+	if _, err := restarted.sync(context.Background()); err == nil {
+		t.Fatal("expected an error when the old hub CA key version cannot sign")
+	}
+	if _, err := restarted.GetCertificate(nil); err == nil {
+		t.Fatal("no hub server SVID may be issued by the pending hub CA")
+	}
+
+	// Removing the saved state signs with the new hub CA at once.
+	rec.state = ""
+	mustSync(t, restarted)
+	if !signedBy(issuer(t, restarted), newCert) {
+		t.Fatal("without a saved state the current hub CA signs")
 	}
 }
 

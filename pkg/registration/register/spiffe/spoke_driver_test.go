@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -43,6 +45,13 @@ type fakeHub struct {
 }
 
 func (h *fakeHub) CreateCertificate(ctx context.Context, req *certv1.CreateCertificateRequest) (*certv1.CreateCertificateResponse, error) {
+	// Renewal must not depend on the current SVID: the real hub refuses an
+	// expired one, or one from a hub CA it no longer trusts, in the handshake.
+	if p, ok := peer.FromContext(ctx); ok {
+		if info, ok := p.AuthInfo.(credentials.TLSInfo); ok && len(info.State.PeerCertificates) > 0 {
+			return nil, fmt.Errorf("the certificate connection must not present a client certificate")
+		}
+	}
 	csr, err := x509.ParseCertificateRequest(req.GetCsr())
 	if err != nil {
 		return nil, err
@@ -60,7 +69,9 @@ func (h *fakeHub) CreateCertificate(ctx context.Context, req *certv1.CreateCerti
 	return &certv1.CreateCertificateResponse{CertificateChain: [][]byte{leaf.Raw}, TrustBundle: [][]byte{h.ca.Certificate.Raw}}, nil
 }
 
-func startHub(t *testing.T) (string, *signer.CA) {
+// startHub returns the hub's address, its hub CA, and a function that restarts
+// the hub on the same address, so agents must open new connections.
+func startHub(t *testing.T) (string, *signer.CA, func()) {
 	t.Helper()
 	m, err := memory.NewSelfSigned(trustDomain, 24*time.Hour)
 	if err != nil {
@@ -73,15 +84,23 @@ func startHub(t *testing.T) (string, *signer.CA) {
 	}
 	tlsConfig := authn.ServerTLSConfig(func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return serverSVID, nil },
 		func() []*x509.Certificate { return []*x509.Certificate{ca.Certificate} })
-	srv := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
-	certv1.RegisterCertificateServiceServer(srv, &fakeHub{ca: ca})
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	var srv *grpc.Server
+	serve := func(addr string) string {
+		srv = grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
+		certv1.RegisterCertificateServiceServer(srv, &fakeHub{ca: ca})
+		lis, err := net.Listen("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() { _ = srv.Serve(lis) }()
+		return lis.Addr().String()
 	}
-	go func() { _ = srv.Serve(lis) }()
-	t.Cleanup(srv.Stop)
-	return lis.Addr().String(), ca
+	addr := serve("127.0.0.1:0")
+	t.Cleanup(func() { srv.Stop() })
+	return addr, ca, func() {
+		srv.Stop()
+		serve(addr)
+	}
 }
 
 func newOption(t *testing.T, addr string, ca *signer.CA) *Option {
@@ -103,7 +122,7 @@ func newOption(t *testing.T, addr string, ca *signer.CA) *Option {
 }
 
 func TestDriverObtainsSVIDAndStoresTrustBundle(t *testing.T) {
-	addr, ca := startHub(t)
+	addr, ca, restartHub := startHub(t)
 	d, err := NewDriver(newOption(t, addr, ca), register.SecretOption{ClusterName: cluster})
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +157,15 @@ func TestDriverObtainsSVIDAndStoresTrustBundle(t *testing.T) {
 	}
 	if signer, _, _ := unstructured.NestedString(ctb.Object, "spec", "signerName"); signer != trustbundle.SignerName {
 		t.Errorf("unexpected signer %q", signer)
+	}
+
+	// Renew over a new connection now that the agent holds an SVID.
+	restartHub()
+	if err := wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
+		_, err := d.manager.Renew(ctx)
+		return err == nil, nil
+	}); err != nil {
+		t.Fatalf("renewal over a new connection failed: %v", err)
 	}
 
 	cert, err := d.ClientCertificate(nil)

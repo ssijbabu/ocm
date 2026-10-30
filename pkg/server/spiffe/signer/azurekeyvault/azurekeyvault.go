@@ -11,6 +11,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/sha1"
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
@@ -98,11 +99,80 @@ type signResponse struct {
 	Value string `json:"value"`
 }
 
+// certificateVersions is one page of a certificate's versions.
+type certificateVersions struct {
+	Value []struct {
+		// ID is the certificate version's URL.
+		ID string `json:"id"`
+		// X5t is the certificate's SHA-1 thumbprint, base64url.
+		X5t string `json:"x5t"`
+	} `json:"value"`
+	NextLink string `json:"nextLink"`
+}
+
+// maxVersionPages bounds the version listing.
+const maxVersionPages = 20
+
 func (s *Signer) Current(ctx context.Context) (*signer.CA, error) {
 	var bundle certificateBundle
 	if err := s.get(ctx, s.vault.String()+"/certificates/"+url.PathEscape(s.name), &bundle); err != nil {
 		return nil, fmt.Errorf("failed to read hub CA certificate %q from Key Vault: %w", s.name, err)
 	}
+	return s.caFor(ctx, bundle)
+}
+
+// ForCertificate finds the version of the Key Vault certificate that holds
+// cert and signs with its key version, which stays enabled after a new
+// version is created.
+func (s *Signer) ForCertificate(ctx context.Context, cert *x509.Certificate) (*signer.CA, error) {
+	sum := sha1.Sum(cert.Raw) //nolint:gosec // Key Vault identifies certificates by SHA-1 thumbprint
+	thumbprint := base64.RawURLEncoding.EncodeToString(sum[:])
+	next := s.vault.String() + "/certificates/" + url.PathEscape(s.name) + "/versions?api-version=" + apiVersion
+	for page := 0; next != "" && page < maxVersionPages; page++ {
+		if err := s.inVault(next); err != nil {
+			return nil, err
+		}
+		var versions certificateVersions
+		if err := s.getURL(ctx, next, &versions); err != nil {
+			return nil, fmt.Errorf("failed to list the versions of hub CA certificate %q in Key Vault: %w", s.name, err)
+		}
+		for _, v := range versions.Value {
+			if strings.TrimRight(v.X5t, "=") != thumbprint {
+				continue
+			}
+			if err := s.inVault(v.ID); err != nil {
+				return nil, err
+			}
+			var bundle certificateBundle
+			if err := s.get(ctx, v.ID, &bundle); err != nil {
+				return nil, fmt.Errorf("failed to read hub CA certificate version %s from Key Vault: %w", v.ID, err)
+			}
+			ca, err := s.caFor(ctx, bundle)
+			if err != nil {
+				return nil, err
+			}
+			if !ca.Certificate.Equal(cert) {
+				return nil, fmt.Errorf("hub CA certificate version %s does not hold the expected certificate", v.ID)
+			}
+			return ca, nil
+		}
+		next = versions.NextLink
+	}
+	return nil, fmt.Errorf("hub CA certificate %q is not a version of Key Vault certificate %q", cert.Subject.String(), s.name)
+}
+
+// inVault refuses URLs outside the vault, so the access token is never sent
+// elsewhere.
+func (s *Signer) inVault(resource string) error {
+	u, err := url.Parse(resource)
+	if err != nil || u.Scheme != "https" || !strings.EqualFold(u.Host, s.vault.Host) {
+		return fmt.Errorf("Key Vault returned a URL outside %s: %q", s.vault.Host, resource)
+	}
+	return nil
+}
+
+// caFor pairs a certificate version with the key version it names.
+func (s *Signer) caFor(ctx context.Context, bundle certificateBundle) (*signer.CA, error) {
 	der, err := base64.StdEncoding.DecodeString(bundle.Cer)
 	if err != nil {
 		return nil, fmt.Errorf("hub CA certificate %q has invalid cer data: %w", s.name, err)
@@ -166,11 +236,16 @@ func (s *Signer) keyVersionURL(kid string) (string, error) {
 }
 
 func (s *Signer) get(ctx context.Context, resource string, out interface{}) error {
+	return s.getURL(ctx, resource+"?api-version="+apiVersion, out)
+}
+
+// getURL fetches a URL that already carries its query, such as a nextLink.
+func (s *Signer) getURL(ctx context.Context, resource string, out interface{}) error {
 	token, err := s.tokens.Token(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get a Key Vault access token: %w", err)
 	}
-	return rest.Do(ctx, s.client, http.MethodGet, resource+"?api-version="+apiVersion,
+	return rest.Do(ctx, s.client, http.MethodGet, resource,
 		map[string]string{"Authorization": "Bearer " + token}, nil, out)
 }
 

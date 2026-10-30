@@ -58,7 +58,10 @@ type HubConfig struct {
 	GRPCSPIFFEEnabled bool
 	// GRPCSPIFFEConfig is the gRPC server's SPIFFE config file. The type has to
 	// be []byte to use the "indent" template function.
-	GRPCSPIFFEConfig                   []byte
+	GRPCSPIFFEConfig []byte
+	// GRPCSPIFFEConfigHash goes on the gRPC server's pod template, so a
+	// changed config restarts the server, which reads it only at startup.
+	GRPCSPIFFEConfigHash                string
 	GRPCSPIFFEServiceAccountAnnotations map[string]string
 	GRPCSPIFFEPodLabels                 map[string]string
 	// GRPCSPIFFEOpenBaoTokenAudience is set when the hub CA is in OpenBao: the

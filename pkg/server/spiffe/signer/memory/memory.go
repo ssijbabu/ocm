@@ -4,6 +4,7 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -19,18 +20,20 @@ import (
 	"open-cluster-management.io/ocm/pkg/server/spiffe/signer"
 )
 
-// Signer holds a hub CA key and certificate in memory.
+// Signer holds a hub CA key and certificate in memory, and the earlier ones
+// it was rotated from.
 type Signer struct {
-	mu   sync.RWMutex
-	key  crypto.Signer
-	cert *x509.Certificate
+	mu      sync.RWMutex
+	key     crypto.Signer
+	cert    *x509.Certificate
+	earlier map[string]crypto.Signer
 }
 
 var _ signer.Signer = &Signer{}
 
 // New returns a Signer for an existing key and hub CA certificate.
 func New(key crypto.Signer, cert *x509.Certificate) *Signer {
-	return &Signer{key: key, cert: cert}
+	return &Signer{key: key, cert: cert, earlier: map[string]crypto.Signer{}}
 }
 
 // NewSelfSigned creates a P-256 key and a self-signed hub CA certificate whose
@@ -81,6 +84,7 @@ func NewSelfSignedCA(trustDomain string, now time.Time, ttl time.Duration) (cryp
 func (s *Signer) Rotate(key crypto.Signer, cert *x509.Certificate) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.earlier[string(s.cert.Raw)] = s.key
 	s.key, s.cert = key, cert
 }
 
@@ -88,7 +92,23 @@ func (s *Signer) Current(_ context.Context) (*signer.CA, error) {
 	s.mu.RLock()
 	key, cert := s.key, s.cert
 	s.mu.RUnlock()
+	return newCA(key, cert)
+}
 
+func (s *Signer) ForCertificate(_ context.Context, cert *x509.Certificate) (*signer.CA, error) {
+	s.mu.RLock()
+	key, ok := s.earlier[string(cert.Raw)]
+	if bytes.Equal(cert.Raw, s.cert.Raw) {
+		key, ok = s.key, true
+	}
+	s.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("no key for hub CA certificate %q", cert.Subject.String())
+	}
+	return newCA(key, cert)
+}
+
+func newCA(key crypto.Signer, cert *x509.Certificate) (*signer.CA, error) {
 	return signer.NewCA(cert, key.Public(), func(_ context.Context, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 		if err := signer.CheckDigest(key.Public(), digest, opts); err != nil {
 			return nil, err

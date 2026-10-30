@@ -21,6 +21,10 @@ type Signer interface {
 	// KMS key version that certificate belongs to. Callers should call it again
 	// periodically to pick up a rotated hub CA.
 	Current(ctx context.Context) (*CA, error)
+	// ForCertificate returns a handle for an earlier hub CA certificate whose
+	// key version is still enabled in the KMS. A restarted hub gRPC server uses
+	// it to keep signing with the old hub CA while a new one is pending.
+	ForCertificate(ctx context.Context, cert *x509.Certificate) (*CA, error)
 }
 
 // SignFunc signs a digest with one KMS key version and returns an ASN.1 DER

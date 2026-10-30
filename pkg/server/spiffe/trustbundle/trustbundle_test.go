@@ -143,3 +143,35 @@ func TestEncodePEM(t *testing.T) {
 		t.Fatal("PEM does not round-trip in order")
 	}
 }
+
+func TestSaveAndLoadRotationState(t *testing.T) {
+	ctx := context.Background()
+	dyn, disc, _ := newClients("v1")
+	p := NewPublisher(dyn, disc)
+	if certs, state, err := p.Load(ctx); err != nil || certs != nil || state != "" {
+		t.Fatalf("want nothing before the first publish, got %d certificates, %q, %v", len(certs), state, err)
+	}
+
+	a, b := newCert(t), newCert(t)
+	if err := p.Save(ctx, []*x509.Certificate{a, b}, `{"active":"a"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Save(ctx, []*x509.Certificate{a, b}, `{"active":"a","pending":"b"}`); err != nil {
+		t.Fatal(err)
+	}
+	certs, state, err := p.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(certs) != 2 || !certs[0].Equal(a) || !certs[1].Equal(b) || state != `{"active":"a","pending":"b"}` {
+		t.Fatalf("unexpected bundle or state after a state-only change: %d certificates, %q", len(certs), state)
+	}
+
+	// The spoke's Publish leaves the state alone.
+	if err := p.Publish(ctx, []*x509.Certificate{b}); err != nil {
+		t.Fatal(err)
+	}
+	if _, state, _ := p.Load(ctx); state != `{"active":"a","pending":"b"}` {
+		t.Errorf("Publish must not change the rotation state, got %q", state)
+	}
+}

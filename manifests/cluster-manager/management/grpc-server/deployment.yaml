@@ -30,6 +30,10 @@ spec:
         "{{ $key }}": "{{ $value }}"
         {{ end }}
         {{ end }}
+      {{ if .GRPCSPIFFEEnabled }}
+      annotations:
+        open-cluster-management.io/spiffe-config-hash: "{{ .GRPCSPIFFEConfigHash }}"
+      {{ end }}
     spec:
       affinity:
         podAntiAffinity:

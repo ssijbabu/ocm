@@ -43,7 +43,7 @@ func setupSPIFFE(ctx context.Context, configPath string, clients *Clients, close
 
 	publisher := trustbundle.NewPublisher(clients.DynamicClient, clients.KubeClient.Discovery())
 	sourceOpts := cfg.SourceOptions()
-	sourceOpts.OnTrustBundleChange = publisher.Publish
+	sourceOpts.Store = publisher
 	source, err := svid.NewServerSVIDSource(signer, sourceOpts)
 	if err != nil {
 		return nil, err

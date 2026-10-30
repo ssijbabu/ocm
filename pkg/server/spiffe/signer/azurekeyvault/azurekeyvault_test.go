@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -28,27 +31,53 @@ type staticToken string
 
 func (s staticToken) Token(context.Context) (string, error) { return string(s), nil }
 
-// fakeVault serves the three Key Vault calls the signer makes, signing with an
-// in-memory key the way Key Vault's HSM would.
+// fakeVault serves the Key Vault calls the signer makes, signing with
+// in-memory keys the way Key Vault's HSM would. Each rotation adds a version
+// of the certificate and its key; the last one is current.
 type fakeVault struct {
-	server *httptest.Server
-	key    *ecdsa.PrivateKey
-	cert   *x509.Certificate
-	kid    string
-	signs  atomic.Int32
+	server   *httptest.Server
+	versions []fakeVersion
+	// key, cert and kid are the current version's.
+	key   *ecdsa.PrivateKey
+	cert  *x509.Certificate
+	kid   string
+	signs atomic.Int32
+}
+
+type fakeVersion struct {
+	name string
+	key  *ecdsa.PrivateKey
+	cert *x509.Certificate
 }
 
 func newFakeVault(t *testing.T) *fakeVault {
+	t.Helper()
+	f := &fakeVault{}
+	f.server = httptest.NewTLSServer(http.HandlerFunc(f.serve))
+	t.Cleanup(f.server.Close)
+	f.rotate(t)
+	return f
+}
+
+// rotate adds a certificate version with a new key, as a platform admin does.
+func (f *fakeVault) rotate(t *testing.T) {
 	t.Helper()
 	k, cert, err := memory.NewSelfSignedCA(trustDomain, time.Now(), 24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fakeVault{key: k.(*ecdsa.PrivateKey), cert: cert}
-	f.server = httptest.NewTLSServer(http.HandlerFunc(f.serve))
-	f.kid = f.server.URL + "/keys/ocm-spiffe-ca/v1"
-	t.Cleanup(f.server.Close)
-	return f
+	v := fakeVersion{name: fmt.Sprintf("v%d", len(f.versions)+1), key: k.(*ecdsa.PrivateKey), cert: cert}
+	f.versions = append(f.versions, v)
+	f.key, f.cert, f.kid = v.key, v.cert, f.server.URL+"/keys/ocm-spiffe-ca/"+v.name
+}
+
+func (f *fakeVault) version(name string) (fakeVersion, bool) {
+	for _, v := range f.versions {
+		if v.name == name {
+			return v, true
+		}
+	}
+	return fakeVersion{}, false
 }
 
 func (f *fakeVault) serve(w http.ResponseWriter, r *http.Request) {
@@ -56,26 +85,58 @@ func (f *fakeVault) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"code":"Unauthorized"}}`, http.StatusUnauthorized)
 		return
 	}
+	certificate := func(v fakeVersion) map[string]string {
+		return map[string]string{"kid": f.server.URL + "/keys/ocm-spiffe-ca/" + v.name, "cer": base64.StdEncoding.EncodeToString(v.cert.Raw)}
+	}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/certificates/ocm-spiffe-ca":
-		_ = json.NewEncoder(w).Encode(map[string]string{"kid": f.kid, "cer": base64.StdEncoding.EncodeToString(f.cert.Raw)})
-	case r.Method == http.MethodGet && r.URL.Path == "/keys/ocm-spiffe-ca/v1":
-		pub := f.key.PublicKey
+		// The current version's key identifier comes from f.kid, which tests
+		// may tamper with.
+		current := certificate(f.versions[len(f.versions)-1])
+		current["kid"] = f.kid
+		_ = json.NewEncoder(w).Encode(current)
+	case r.Method == http.MethodGet && r.URL.Path == "/certificates/ocm-spiffe-ca/versions":
+		// One version per page, to exercise nextLink.
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		v := f.versions[page]
+		sum := sha1.Sum(v.cert.Raw) //nolint:gosec
+		list := map[string]interface{}{"value": []map[string]string{{
+			"id": f.server.URL + "/certificates/ocm-spiffe-ca/" + v.name, "x5t": base64.RawURLEncoding.EncodeToString(sum[:]),
+		}}}
+		if page+1 < len(f.versions) {
+			list["nextLink"] = fmt.Sprintf("%s/certificates/ocm-spiffe-ca/versions?api-version=%s&page=%d", f.server.URL, apiVersion, page+1)
+		}
+		_ = json.NewEncoder(w).Encode(list)
+	case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "certificates":
+		v, ok := f.version(parts[2])
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(certificate(v))
+	case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "keys":
+		v, ok := f.version(parts[2])
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
 		x, y := make([]byte, 32), make([]byte, 32)
-		pub.X.FillBytes(x)
-		pub.Y.FillBytes(y)
+		v.key.PublicKey.X.FillBytes(x)
+		v.key.PublicKey.Y.FillBytes(y)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"key": map[string]string{
-			"kid": f.kid, "kty": "EC-HSM", "crv": "P-256",
+			"kty": "EC-HSM", "crv": "P-256",
 			"x": base64.RawURLEncoding.EncodeToString(x), "y": base64.RawURLEncoding.EncodeToString(y),
 		}})
-	case r.Method == http.MethodPost && r.URL.Path == "/keys/ocm-spiffe-ca/v1/sign":
+	case r.Method == http.MethodPost && len(parts) == 4 && parts[0] == "keys" && parts[3] == "sign":
+		v, ok := f.version(parts[2])
 		var req signRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Alg != "ES256" {
+		if err := json.NewDecoder(r.Body).Decode(&req); !ok || err != nil || req.Alg != "ES256" {
 			http.Error(w, `{"error":{"code":"BadParameter"}}`, http.StatusBadRequest)
 			return
 		}
 		digest, _ := base64.RawURLEncoding.DecodeString(req.Value)
-		rr, s, err := ecdsa.Sign(rand.Reader, f.key, digest)
+		rr, s, err := ecdsa.Sign(rand.Reader, v.key, digest)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -84,7 +145,7 @@ func (f *fakeVault) serve(w http.ResponseWriter, r *http.Request) {
 		rr.FillBytes(raw[:32])
 		s.FillBytes(raw[32:])
 		f.signs.Add(1)
-		_ = json.NewEncoder(w).Encode(map[string]string{"kid": f.kid, "value": base64.RawURLEncoding.EncodeToString(raw)})
+		_ = json.NewEncoder(w).Encode(map[string]string{"value": base64.RawURLEncoding.EncodeToString(raw)})
 	default:
 		http.NotFound(w, r)
 	}
@@ -126,6 +187,34 @@ func TestIssueServerSVIDThroughKeyVault(t *testing.T) {
 	roots.AddCert(f.cert)
 	if _, err := cert.Leaf.Verify(x509.VerifyOptions{Roots: roots, CurrentTime: now}); err != nil {
 		t.Fatalf("hub server SVID signed through Key Vault does not verify: %v", err)
+	}
+}
+
+func TestForCertificateSignsWithAnEarlierVersion(t *testing.T) {
+	f := newFakeVault(t)
+	oldCert := f.cert
+	f.rotate(t)
+	f.rotate(t)
+	s := f.signer(t)
+
+	ca, err := s.ForCertificate(context.Background(), oldCert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ca.Certificate.Equal(oldCert) {
+		t.Fatal("unexpected hub CA certificate")
+	}
+	cert, err := svid.IssueServerSVID(context.Background(), ca, trustDomain, nil, time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cert.Leaf.CheckSignatureFrom(oldCert); err != nil {
+		t.Fatalf("not signed with the earlier key version: %v", err)
+	}
+
+	_, unknown, _ := memory.NewSelfSignedCA(trustDomain, time.Now(), time.Hour)
+	if _, err := s.ForCertificate(context.Background(), unknown); err == nil {
+		t.Fatal("expected an error for a certificate that is not in the vault")
 	}
 }
 
