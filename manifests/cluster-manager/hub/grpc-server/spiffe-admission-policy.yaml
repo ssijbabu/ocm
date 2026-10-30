@@ -35,27 +35,34 @@ spec:
       apiVersions: ["v1"]
       operations: ["CREATE", "UPDATE"]
       resources: ["deployments", "replicasets"]
+  # Pods created from a ReplicaSet have only a generated name, and most
+  # requests have no subresource, so has() guards every optional field: in CEL
+  # reading a missing field is an error, and errors deny with failurePolicy Fail.
   validations:
   - expression: >-
-      request.resource.resource != 'pods' || request.subResource != '' ||
-      object.spec.serviceAccountName != 'grpc-server-sa' ||
+      !(request.resource.resource == 'pods' &&
+        (!has(request.subResource) || request.subResource == '') &&
+        object.spec.serviceAccountName == 'grpc-server-sa') ||
       request.userInfo.username == 'system:serviceaccount:kube-system:replicaset-controller'
     message: only the ReplicaSet controller may create pods that run as grpc-server-sa
   - expression: >-
-      !(request.resource.resource in ['deployments', 'replicasets']) ||
-      object.spec.template.spec.serviceAccountName != 'grpc-server-sa' ||
+      !(request.resource.resource in ['deployments', 'replicasets'] &&
+        object.spec.template.spec.serviceAccountName == 'grpc-server-sa') ||
       request.userInfo.username in [
         'system:serviceaccount:{{ .OperatorNamespace }}:cluster-manager',
-        'system:serviceaccount:kube-system:deployment-controller']
+        'system:serviceaccount:kube-system:deployment-controller',
+        'system:serviceaccount:kube-system:generic-garbage-collector'] ||
+      'system:masters' in request.userInfo.groups
     message: only the cluster-manager operator may run workloads as grpc-server-sa
   - expression: >-
-      request.resource.resource != 'serviceaccounts' || request.subResource != 'token' ||
-      request.name != 'grpc-server-sa' ||
+      !(request.resource.resource == 'serviceaccounts' &&
+        has(request.subResource) && request.subResource == 'token' &&
+        has(request.name) && request.name == 'grpc-server-sa') ||
       'system:nodes' in request.userInfo.groups
     message: tokens for grpc-server-sa may only be requested by kubelets for projected volumes
   - expression: >-
-      request.resource.resource != 'pods' ||
-      !(request.subResource in ['exec', 'attach', 'portforward', 'ephemeralcontainers']) ||
-      !request.name.startsWith('{{ .ClusterManagerName }}-grpc-server-') ||
+      !(request.resource.resource == 'pods' &&
+        has(request.subResource) && request.subResource in ['exec', 'attach', 'portforward', 'ephemeralcontainers'] &&
+        has(request.name) && request.name.startsWith('{{ .ClusterManagerName }}-grpc-server-')) ||
       'system:masters' in request.userInfo.groups
     message: only hub cluster admins may open a shell in, attach to or debug the gRPC server

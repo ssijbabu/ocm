@@ -37,10 +37,14 @@ func (r *EventRecorder) RecordIssuance(ctx context.Context, i Issuance) {
 	now := metav1.NewTime(time.Now())
 	event := &corev1.Event{
 		ObjectMeta: metav1.ObjectMeta{GenerateName: i.Cluster + "-svid-", Namespace: i.Cluster},
+		// The Event lives in the cluster namespace, so the reference carries
+		// that namespace even though ManagedCluster is cluster-scoped: the API
+		// server requires the two to match.
 		InvolvedObject: corev1.ObjectReference{
 			APIVersion: "cluster.open-cluster-management.io/v1",
 			Kind:       "ManagedCluster",
 			Name:       i.Cluster,
+			Namespace:  i.Cluster,
 		},
 		Reason:         EventReasonAgentSVIDIssued,
 		Message:        fmt.Sprintf("Issued agent SVID %s to %s, pod %s, serial %s, expires %s", i.SPIFFEID, who, i.Pod, i.Serial, i.NotAfter.UTC().Format(time.RFC3339)),

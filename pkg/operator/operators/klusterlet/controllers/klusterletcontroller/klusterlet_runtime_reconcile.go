@@ -101,8 +101,12 @@ func (r *runtimeReconcile) installAgent(ctx context.Context, klusterlet *operato
 	// * The work agent should not be scaled to 0 in degraded condition with other reasons,
 	//   because we still need work agent running even though the hub kubconfig is missing some certain permission.
 	//   It can ensure work agent to clean up the resources defined in manifestworks when cluster is detaching from the hub.
+	// With SPIFFE identities there is no hub kubeconfig Secret to wait for: the
+	// work agent obtains its own SVID and retries until the cluster is accepted.
 	hubConnectionDegradedCondition := meta.FindStatusCondition(klusterlet.Status.Conditions, operatorapiv1.ConditionHubConnectionDegraded)
-	if hubConnectionDegradedCondition == nil {
+	if runtimeConfig.RegistrationDriver.SPIFFE != nil {
+		// keep the requested replicas
+	} else if hubConnectionDegradedCondition == nil {
 		workConfig.Replica = 0
 	} else if hubConnectionDegradedCondition.Status == metav1.ConditionTrue &&
 		strings.Contains(hubConnectionDegradedCondition.Reason, operatorapiv1.ReasonHubKubeConfigSecretMissing) {

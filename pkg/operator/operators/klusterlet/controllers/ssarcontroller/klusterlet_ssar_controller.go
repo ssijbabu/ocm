@@ -103,6 +103,22 @@ func (c *ssarController) sync(ctx context.Context, controllerContext factory.Syn
 	}
 	klusterlet = klusterlet.DeepCopy()
 
+	// SPIFFE agents use no bootstrap or hub kubeconfig Secret, so there is
+	// nothing to check here; the agents report their hub connection through
+	// the ManagedCluster lease and status.
+	if rc := klusterlet.Spec.RegistrationConfiguration; rc != nil && rc.RegistrationDriver.SPIFFE != nil {
+		newKlusterlet := klusterlet.DeepCopy()
+		meta.SetStatusCondition(&newKlusterlet.Status.Conditions, metav1.Condition{
+			Type:               operatorapiv1.ConditionHubConnectionDegraded,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: klusterlet.Generation,
+			Reason:             "SPIFFEIdentities",
+			Message:            "The agents authenticate with SPIFFE identities and keep no kubeconfig Secret",
+		})
+		_, err := c.patcher.PatchStatus(ctx, newKlusterlet, newKlusterlet.Status, klusterlet.Status)
+		return err
+	}
+
 	// if the ssar checking is already processing, requeue it after 30s.
 	if c.inSSARChecking(klusterletName) {
 		logger.V(4).Info("Reconciling Klusterlet is already processing now", "name", klusterletName)
