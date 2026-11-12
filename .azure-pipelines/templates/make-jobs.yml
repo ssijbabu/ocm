@@ -1,0 +1,43 @@
+# One job per entry in `checks`, each running a list of make commands on a fresh agent,
+# mirroring the jobs in .github/workflows.
+parameters:
+- name: checks
+  type: object
+  # - name: verify                # job identifier (letters, digits, underscores)
+  #   displayName: verify
+  #   timeoutInMinutes: 60        # optional
+  #   commands: [make verify]
+- name: checkoutPath
+  type: string
+  default: ''                     # set when the repo must sit inside a GOPATH layout
+- name: goPath
+  type: string
+  default: ''
+
+jobs:
+- ${{ each check in parameters.checks }}:
+  - job: ${{ check.name }}
+    displayName: ${{ check.displayName }}
+    timeoutInMinutes: ${{ coalesce(check.timeoutInMinutes, 60) }}
+    pool:
+      vmImage: ubuntu-latest
+    variables:
+      ${{ if eq(parameters.checkoutPath, '') }}:
+        repoDir: $(Build.SourcesDirectory)
+      ${{ else }}:
+        repoDir: $(Agent.BuildDirectory)/${{ parameters.checkoutPath }}
+    steps:
+    - checkout: self
+      fetchDepth: 1
+      ${{ if ne(parameters.checkoutPath, '') }}:
+        path: ${{ parameters.checkoutPath }}
+
+    - template: setup-go.yml
+      parameters:
+        workingDirectory: $(repoDir)
+        goPath: ${{ parameters.goPath }}
+
+    - ${{ each command in check.commands }}:
+      - bash: ${{ command }}
+        displayName: ${{ command }}
+        workingDirectory: $(repoDir)

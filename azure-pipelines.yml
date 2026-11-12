@@ -1,0 +1,173 @@
+# Azure DevOps pipeline for open-cluster-management.io/ocm.
+#
+#   CI       verify, build, unit and integration tests (mirrors .github/workflows/pre.yml)
+#   Images   builds the five OCM images and pushes them to ACR, tagged with the commit SHA
+#            (not on pull requests)
+#   AKS e2e  creates a hub and a spoke AKS cluster, installs OCM with the azure registration
+#            driver using Azure Workload Identity, checks auto- and manual approval and
+#            ManifestWork delivery, then deletes everything. Runs only when queued manually
+#            with runAksE2E=true, because it creates billable Azure resources.
+#
+# One-time setup in the Azure DevOps project:
+#   - Docker registry service connection to the ACR, named as acrServiceConnection below.
+#   - Azure Resource Manager service connection, named as azureServiceConnection below, whose
+#     identity can create resource groups, AKS clusters and managed identities in the
+#     subscription, and assign AcrPull on the ACR (Contributor on the subscription plus
+#     User Access Administrator, or Owner, on the ACR).
+
+trigger:
+  branches:
+    include:
+    - main
+    - release-*
+    - azure-*
+
+pr:
+  branches:
+    include:
+    - main
+    - release-*
+
+parameters:
+- name: runAksE2E
+  displayName: Run the AKS end-to-end test (creates billable Azure resources)
+  type: boolean
+  default: false
+- name: testManualApproval
+  displayName: Also test the manual-approval join path
+  type: boolean
+  default: true
+- name: keepClusters
+  displayName: Keep the AKS clusters after the test (delete the resource group yourself)
+  type: boolean
+  default: false
+- name: location
+  displayName: Azure region for the AKS clusters
+  type: string
+  default: eastus
+- name: nodeVmSize
+  displayName: AKS node VM size
+  type: string
+  default: Standard_D2s_v3
+
+variables:
+  acrServiceConnection: ocm-acr          # Docker registry service connection
+  azureServiceConnection: ocm-azure      # Azure Resource Manager service connection
+  acrName: ocmazureauthtest              # ACR name, without .azurecr.io
+  imageTag: $(Build.SourceVersion)
+
+stages:
+- stage: ci
+  displayName: CI
+  jobs:
+  - template: .azure-pipelines/templates/make-jobs.yml
+    parameters:
+      checks:
+      - name: verify
+        displayName: verify
+        commands:
+        - make verify
+        - make verify-deps
+        - make verify-fmt-imports
+        - make verify-csv </dev/null
+      - name: build
+        displayName: build
+        commands: [make build]
+      - name: unit
+        displayName: unit
+        commands: [make test]
+      - name: integration
+        displayName: integration
+        timeoutInMinutes: 120
+        commands: [make test-integration]
+
+- stage: images
+  displayName: Images
+  dependsOn: ci
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+  jobs:
+  - job: build_push
+    displayName: build and push
+    timeoutInMinutes: 60
+    pool:
+      vmImage: ubuntu-latest
+    strategy:
+      matrix:
+        registration:
+          imageName: registration
+          dockerfile: build/Dockerfile.registration
+        work:
+          imageName: work
+          dockerfile: build/Dockerfile.work
+        placement:
+          imageName: placement
+          dockerfile: build/Dockerfile.placement
+        addon_manager:
+          imageName: addon-manager
+          dockerfile: build/Dockerfile.addon
+        registration_operator:
+          imageName: registration-operator
+          dockerfile: build/Dockerfile.registration-operator
+    steps:
+    - checkout: self
+      fetchDepth: 1
+    - task: Docker@2
+      displayName: Build and push $(imageName):$(imageTag)
+      inputs:
+        command: buildAndPush
+        containerRegistry: ${{ variables.acrServiceConnection }}
+        repository: $(imageName)
+        Dockerfile: $(Build.SourcesDirectory)/$(dockerfile)
+        buildContext: $(Build.SourcesDirectory)
+        tags: $(imageTag)
+
+- ${{ if eq(parameters.runAksE2E, true) }}:
+  - stage: aks_e2e
+    displayName: AKS e2e
+    dependsOn: images
+    condition: succeeded()
+    jobs:
+    - job: aks_e2e
+      displayName: azure driver on AKS (workload identity)
+      timeoutInMinutes: 120
+      pool:
+        vmImage: ubuntu-latest
+      variables:
+        resourceGroup: ocm-e2e-$(Build.BuildId)
+      steps:
+      - checkout: self
+        fetchDepth: 1
+
+      - task: AzureCLI@2
+        displayName: Run AKS e2e
+        inputs:
+          azureSubscription: ${{ variables.azureServiceConnection }}
+          scriptType: bash
+          scriptLocation: scriptPath
+          scriptPath: .azure-pipelines/scripts/aks-e2e.sh
+          workingDirectory: $(Build.SourcesDirectory)
+        env:
+          RG: $(resourceGroup)
+          LOCATION: ${{ parameters.location }}
+          NODE_VM_SIZE: ${{ parameters.nodeVmSize }}
+          ACR_NAME: $(acrName)
+          IMG_TAG: $(imageTag)
+          TEST_MANUAL_APPROVAL: ${{ parameters.testManualApproval }}
+          WORK_DIR: $(Agent.TempDirectory)/aks-e2e
+
+      - task: PublishPipelineArtifact@1
+        displayName: Publish diagnostics
+        condition: always()
+        inputs:
+          targetPath: $(Agent.TempDirectory)/aks-e2e/diagnostics
+          artifact: aks-e2e-diagnostics-$(System.JobAttempt)
+
+      - ${{ if eq(parameters.keepClusters, false) }}:
+        - task: AzureCLI@2
+          displayName: Delete resource group
+          condition: always()
+          inputs:
+            azureSubscription: ${{ variables.azureServiceConnection }}
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: az group delete --name "$(resourceGroup)" --yes --no-wait || true

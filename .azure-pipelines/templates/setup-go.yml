@@ -1,0 +1,27 @@
+# Installs the Go version declared in go.mod and puts GOPATH/bin on PATH, so tools that
+# make installs (golangci-lint, gci, envtest, ...) can be found by later steps.
+parameters:
+- name: workingDirectory
+  type: string
+- name: goPath
+  type: string
+  default: ''
+
+steps:
+- bash: |
+    set -euo pipefail
+    version=$(awk '/^go /{print $2; exit}' go.mod)
+    echo "Go version from go.mod: ${version}"
+    echo "##vso[task.setvariable variable=goVersion]${version}"
+  displayName: Read Go version from go.mod
+  workingDirectory: ${{ parameters.workingDirectory }}
+
+- task: GoTool@0
+  displayName: Install Go $(goVersion)
+  inputs:
+    version: $(goVersion)
+    ${{ if ne(parameters.goPath, '') }}:
+      goPath: ${{ parameters.goPath }}
+
+- bash: echo "##vso[task.prependpath]$(go env GOPATH)/bin"
+  displayName: Add GOPATH/bin to PATH
